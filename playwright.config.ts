@@ -10,6 +10,9 @@ import 'dotenv/config';
 // Set PUSHGATEWAY_URL=skip in local dev to disable metric push.
 export default defineConfig({
 	testDir: './tests',
+	// outputDir is a SUBDIR of test-results so the bind-mounted parent
+	// (/app/test-results) is never the target of rmdir() between runs.
+	outputDir: './test-results/latest',
 	timeout: 90_000, // 90s per test — UI rendering + WebMKS handshake is slow
 	expect: { timeout: 15_000 },
 	fullyParallel: false, // sequential — one synthetic user, one browser context
