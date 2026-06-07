@@ -52,63 +52,66 @@ modes.
 
 ## Setup
 
-### One-time, on netbirdv01
+### One-time, on netbirdv01 (Docker-based, recommended)
+
+The runner is published as a Docker image so netbirdv01 doesn't need
+Node.js, npm, or Chromium installed on the host.
 
 ```bash
-sudo apt-get install -y nodejs npm chromium-browser
-sudo useradd -r -m -d /opt/synthetic-ui synthetic-ui
-sudo -u synthetic-ui git clone https://github.com/jmal1/selfservice-synthetic-ui.git /opt/synthetic-ui/app
-cd /opt/synthetic-ui/app
-sudo -u synthetic-ui npm ci
-sudo -u synthetic-ui npx playwright install chromium
+# Pull the credentials from Vault → /opt/synthetic-ui/secrets/env
+sudo mkdir -p /opt/synthetic-ui/{secrets,app,results,report}
+sudo chown -R jmal:jmal /opt/synthetic-ui
 
-# Pull the synthetic credentials from Vault (KV v2 path: secret/synthetics/crucible)
-sudo -u synthetic-ui mkdir -p /opt/synthetic-ui/secrets
-sudo -u synthetic-ui touch /opt/synthetic-ui/secrets/env
-sudo chmod 600 /opt/synthetic-ui/secrets/env
 # Edit /opt/synthetic-ui/secrets/env to set:
 #   SYNTHETIC_USERNAME=synthetic@lab.jmal.io
 #   SYNTHETIC_PASSWORD=<from vault: secret/synthetics/crucible/password>
 #   SYNTHETIC_BASE_URL=https://crucible.jmal.io
-#   PUSHGATEWAY_URL=http://pushgateway.observability.svc.cluster.local:9091
+#   PUSHGATEWAY_URL=http://pushgateway.lab.jmal.io:9091
 #   PUSHGATEWAY_JOB=crucible_synthetic_ui
+sudo chmod 600 /opt/synthetic-ui/secrets/env
+
+# Clone the deploy files (compose + systemd units only — image carries the rest)
+git clone --depth 1 https://github.com/jmal1/selfservice-synthetic-ui.git /opt/synthetic-ui/app
 
 # Install systemd timer
-sudo cp deploy/synthetic-ui.{service,timer} /etc/systemd/system/
+sudo cp /opt/synthetic-ui/app/deploy/synthetic-ui.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now synthetic-ui.timer
 
-# Verify
-systemctl status synthetic-ui.timer
-journalctl -u synthetic-ui -n 50 --no-pager
+# First run (manual) — this also pulls the image (~1.8 GB once)
+sudo systemctl start synthetic-ui.service
+journalctl -u synthetic-ui -n 100 --no-pager
 ```
 
-### Updates
+### Local development (Node-based)
 
-```bash
-sudo -u synthetic-ui git -C /opt/synthetic-ui/app pull
-sudo -u synthetic-ui npm ci
-sudo systemctl restart synthetic-ui.timer
-```
-
-## Local development
+For debugging tests interactively you do need Node + Playwright:
 
 ```bash
 npm ci
 npx playwright install chromium
 
-# .env.local with the same vars as the production env file
 cat > .env.local <<'EOF'
 SYNTHETIC_USERNAME=synthetic@lab.jmal.io
 SYNTHETIC_PASSWORD=<from-vault>
 SYNTHETIC_BASE_URL=https://crucible.jmal.io
-PUSHGATEWAY_URL=http://pushgateway.lab.jmal.io:9091
-PUSHGATEWAY_JOB=crucible_synthetic_ui_local
+PUSHGATEWAY_URL=skip
 EOF
 
-npm test                  # run the suite once, push to PUSHGATEWAY_URL
+npm test                  # run the suite once (no push since URL=skip)
 npm run test:ui-mode      # debug interactively
-npm run test:no-push      # run without pushing metrics
+npm run test:headed       # see the browser
+```
+
+### Updates
+
+The systemd unit runs `docker compose pull --quiet` on every invocation,
+so a new image build automatically picks up on the next hour. To pull
+manually:
+
+```bash
+sudo docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull
+sudo systemctl start synthetic-ui.service  # run immediately
 ```
 
 ## Metrics

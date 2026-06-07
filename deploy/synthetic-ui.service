@@ -1,37 +1,23 @@
 [Unit]
-Description=Crucible synthetic UI monitor (Playwright)
-After=network-online.target
+Description=Crucible synthetic UI monitor (Playwright in Docker)
+After=docker.service network-online.target
+Requires=docker.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=synthetic-ui
-Group=synthetic-ui
+User=jmal
+Group=docker
 WorkingDirectory=/opt/synthetic-ui/app
-EnvironmentFile=/opt/synthetic-ui/secrets/env
-# Playwright needs a writable HOME for its browser cache.
-Environment=HOME=/opt/synthetic-ui
-# Keep CI=false so HTML report opens are skipped, not so tests behave
-# differently from local runs.
-Environment=CI=true
-# Run the suite once, no UI.
-ExecStart=/usr/bin/npm test --silent
+# Pull the latest image (small layer diff once cached) then run once.
+ExecStartPre=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull --quiet
+ExecStart=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
 StandardOutput=journal
 StandardError=journal
 # Each run should complete in ~3 min; kill after 15 to avoid runaway.
 TimeoutStartSec=900
 
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/opt/synthetic-ui
+# Security hardening (the container itself adds another layer of isolation).
+NoNewPrivileges=false
 PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictRealtime=true
-MemoryAccounting=true
-MemoryHigh=1G
-MemoryMax=2G
+

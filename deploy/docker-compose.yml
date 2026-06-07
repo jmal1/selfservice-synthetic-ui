@@ -1,0 +1,24 @@
+# docker-compose file for the synthetic UI monitor.
+#
+# Used by the systemd-based scheduler on netbirdv01. The compose file
+# mainly captures the volume + env wiring so we don't need to remember
+# the full `docker run` flag list.
+#
+# Usage:
+#   docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
+services:
+  monitor:
+    image: ghcr.io/jmal1/selfservice-synthetic-ui:latest
+    pull_policy: always
+    env_file:
+      - /opt/synthetic-ui/secrets/env
+    volumes:
+      - /opt/synthetic-ui/results:/app/test-results
+      - /opt/synthetic-ui/report:/app/playwright-report
+    # The container exits on its own when the suite finishes; no restart.
+    restart: "no"
+    # Constrain memory so a runaway browser can't OOM netbirdv01.
+    mem_limit: 2g
+    cpus: 1.5
+    # Run as the synthetic-ui user on the host (UID 1001 in the image).
+    user: pwuser
