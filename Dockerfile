@@ -17,6 +17,11 @@ RUN npm ci --omit=optional
 COPY tsconfig.json playwright.config.ts ./
 COPY tests/ ./tests/
 
+# Create the .auth state dir and writable test-results / report dirs,
+# then hand /app over to pwuser so it can write during runs.
+RUN mkdir -p /app/.auth /app/test-results /app/playwright-report \
+    && chown -R pwuser:pwuser /app
+
 # Playwright stores its browser cache in /ms-playwright by default in
 # this base image; the browsers are already installed there.
 
