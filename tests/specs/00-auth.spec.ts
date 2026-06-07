@@ -22,11 +22,18 @@ test('login_through_authentik', async ({ page }) => {
 	const start = Date.now();
 	await page.goto(creds.baseURL + '/');
 
-	// We expect to land on Authentik. Authentik's flow shows a username
-	// field first ("Identification" stage), then a password field
-	// ("Password" stage). Selectors are stable across Authentik 2024 /
-	// 2025 — name attributes on the input are `uidField` and `password`.
-	await page.waitForURL(/auth\.lab\.jmal\.io/, { timeout: 15_000 });
+	// The Crucible UI redirects unauthenticated visits to its own
+	// `/login` page (not directly to Authentik). Click the SSO button
+	// to kick off the OIDC redirect.
+	await page.waitForURL(/\/login/, { timeout: 15_000 });
+	await page.getByRole('button', { name: /sign in with sso/i }).click();
+
+	// Now we expect to land on Authentik. Authentik's flow shows a
+	// username field first ("Identification" stage), then a password
+	// field ("Password" stage). Selectors are stable across Authentik
+	// 2024 / 2025 — name attributes on the input are `uidField` and
+	// `password`.
+	await page.waitForURL(/authentik\.jmal\.io/, { timeout: 15_000 });
 
 	await page.locator('input[name="uidField"]').fill(creds.username);
 	await page.locator('button[type="submit"]').click();
