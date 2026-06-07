@@ -48,13 +48,18 @@ test('login_through_authentik', async ({ page }) => {
 		await page.getByRole('button', { name: /^(log in|continue)$/i }).click();
 	}
 
-	// Password stage.
-	const passwordField = page
-		.getByRole('textbox', { name: /^password$/i })
-		.or(page.locator('input[type="password"]'))
-		.first();
+	// Password stage. Authentik wraps the input in a Lit custom element
+	// (ak-stage-password). Use a visibility-filtered selector to ensure
+	// we target the actual rendered input and not any shadow-host wrapper.
+	const passwordField = page.locator('input[type="password"]').and(page.locator(':visible')).first();
 	await passwordField.waitFor({ state: 'visible', timeout: 15_000 });
+	await passwordField.click();
 	await passwordField.fill(creds.password);
+	// Verify the fill actually landed before submitting.
+	const filled = await passwordField.inputValue();
+	if (filled.length !== creds.password.length) {
+		throw new Error(`password fill failed: expected ${creds.password.length} chars, got ${filled.length}`);
+	}
 	await page.getByRole('button', { name: /^(continue|log in|sign in)$/i }).click();
 
 	// Authentik may show a consent screen on the very first login;
