@@ -36,22 +36,29 @@ test('login_through_authentik', async ({ page }) => {
 	// shown directly with the username already remembered.
 	await page.waitForURL(/authentik\.jmal\.io/, { timeout: 15_000 });
 
-	const uidField = page.locator('input[name="uidField"]');
-	if (await uidField.isVisible({ timeout: 2_000 }).catch(() => false)) {
+	// Identification stage — fill the username/email if present.
+	// Authentik renders the input with a placeholder of "Email or Username"
+	// (or "Username") and may or may not set name="uidField".
+	const uidField = page
+		.locator('input[name="uidField"]')
+		.or(page.getByPlaceholder(/email or username|^username$/i))
+		.first();
+	if (await uidField.isVisible({ timeout: 5_000 }).catch(() => false)) {
 		await uidField.fill(creds.username);
-		await page.locator('button[type="submit"]').click();
+		await page.getByRole('button', { name: /^(log in|continue)$/i }).click();
 	}
 
-	// Authentik 2025 renders the password input as a generic <input
-	// type="password"> wrapped inside a flow stage; the `name="password"`
-	// attribute is sometimes absent. Match by type + placeholder.
+	// Password stage — Authentik 2025 renders the password input as a
+	// generic <input type="password"> wrapped inside a flow stage; the
+	// `name="password"` attribute is sometimes absent. Match by type +
+	// placeholder.
 	const passwordField = page
 		.locator('input[type="password"]')
 		.or(page.getByPlaceholder(/please enter your password/i))
 		.first();
 	await passwordField.waitFor({ state: 'visible', timeout: 10_000 });
 	await passwordField.fill(creds.password);
-	await page.locator('button[type="submit"]').click();
+	await page.getByRole('button', { name: /^(continue|log in|sign in)$/i }).click();
 
 	// Authentik may show a consent screen on the very first login;
 	// click through if it does.
