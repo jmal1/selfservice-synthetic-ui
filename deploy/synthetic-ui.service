@@ -1,0 +1,37 @@
+[Unit]
+Description=Crucible synthetic UI monitor (Playwright)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=synthetic-ui
+Group=synthetic-ui
+WorkingDirectory=/opt/synthetic-ui/app
+EnvironmentFile=/opt/synthetic-ui/secrets/env
+# Playwright needs a writable HOME for its browser cache.
+Environment=HOME=/opt/synthetic-ui
+# Keep CI=false so HTML report opens are skipped, not so tests behave
+# differently from local runs.
+Environment=CI=true
+# Run the suite once, no UI.
+ExecStart=/usr/bin/npm test --silent
+StandardOutput=journal
+StandardError=journal
+# Each run should complete in ~3 min; kill after 15 to avoid runaway.
+TimeoutStartSec=900
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/synthetic-ui
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+MemoryAccounting=true
+MemoryHigh=1G
+MemoryMax=2G
