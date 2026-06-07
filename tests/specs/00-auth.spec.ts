@@ -37,24 +37,22 @@ test('login_through_authentik', async ({ page }) => {
 	await page.waitForURL(/authentik\.jmal\.io/, { timeout: 15_000 });
 
 	// Identification stage — fill the username/email if present.
-	// Authentik renders the input with a placeholder of "Email or Username"
-	// (or "Username") and may or may not set name="uidField".
+	// Authentik 2025 uses LitElement / shadow DOM, so we use ARIA
+	// label selectors which pierce shadow roots. The visible label
+	// is "Email or Username" (or "Username" in some configurations).
 	const uidField = page
-		.locator('input[name="uidField"]')
-		.or(page.getByPlaceholder(/email or username|^username$/i))
+		.getByLabel(/email or username|^username$/i)
+		.or(page.locator('input[name="uidField"]'))
 		.first();
 	if (await uidField.isVisible({ timeout: 5_000 }).catch(() => false)) {
 		await uidField.fill(creds.username);
 		await page.getByRole('button', { name: /^(log in|continue)$/i }).click();
 	}
 
-	// Password stage — Authentik 2025 renders the password input as a
-	// generic <input type="password"> wrapped inside a flow stage; the
-	// `name="password"` attribute is sometimes absent. Match by type +
-	// placeholder.
+	// Password stage — label is "Password".
 	const passwordField = page
-		.locator('input[type="password"]')
-		.or(page.getByPlaceholder(/please enter your password/i))
+		.getByLabel(/^password$/i)
+		.or(page.locator('input[type="password"]'))
 		.first();
 	await passwordField.waitFor({ state: 'visible', timeout: 10_000 });
 	await passwordField.fill(creds.password);
