@@ -30,15 +30,27 @@ test('login_through_authentik', async ({ page }) => {
 
 	// Now we expect to land on Authentik. Authentik's flow shows a
 	// username field first ("Identification" stage), then a password
-	// field ("Password" stage). Selectors are stable across Authentik
-	// 2024 / 2025 — name attributes on the input are `uidField` and
-	// `password`.
+	// field ("Password" stage). If the user has already authenticated
+	// recently (cookies/sessions on the same browser), the
+	// identification stage may be skipped and the password page
+	// shown directly with the username already remembered.
 	await page.waitForURL(/authentik\.jmal\.io/, { timeout: 15_000 });
 
-	await page.locator('input[name="uidField"]').fill(creds.username);
-	await page.locator('button[type="submit"]').click();
+	const uidField = page.locator('input[name="uidField"]');
+	if (await uidField.isVisible({ timeout: 2_000 }).catch(() => false)) {
+		await uidField.fill(creds.username);
+		await page.locator('button[type="submit"]').click();
+	}
 
-	await page.locator('input[name="password"]').fill(creds.password);
+	// Authentik 2025 renders the password input as a generic <input
+	// type="password"> wrapped inside a flow stage; the `name="password"`
+	// attribute is sometimes absent. Match by type + placeholder.
+	const passwordField = page
+		.locator('input[type="password"]')
+		.or(page.getByPlaceholder(/please enter your password/i))
+		.first();
+	await passwordField.waitFor({ state: 'visible', timeout: 10_000 });
+	await passwordField.fill(creds.password);
 	await page.locator('button[type="submit"]').click();
 
 	// Authentik may show a consent screen on the very first login;
