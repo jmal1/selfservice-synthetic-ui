@@ -36,25 +36,24 @@ test('login_through_authentik', async ({ page }) => {
 	// shown directly with the username already remembered.
 	await page.waitForURL(/authentik\.jmal\.io/, { timeout: 15_000 });
 
+	// Wait for the auth form to render (Authentik web components load
+	// async). The page accessibility tree shows the inputs as `textbox`
+	// roles with the label as their accessible name.
+	await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+
 	// Identification stage — fill the username/email if present.
-	// Authentik 2025 uses LitElement / shadow DOM, so we use ARIA
-	// label selectors which pierce shadow roots. The visible label
-	// is "Email or Username" (or "Username" in some configurations).
-	const uidField = page
-		.getByLabel(/email or username|^username$/i)
-		.or(page.locator('input[name="uidField"]'))
-		.first();
-	if (await uidField.isVisible({ timeout: 5_000 }).catch(() => false)) {
+	const uidField = page.getByRole('textbox', { name: /email or username|^username$/i });
+	if (await uidField.isVisible({ timeout: 10_000 }).catch(() => false)) {
 		await uidField.fill(creds.username);
 		await page.getByRole('button', { name: /^(log in|continue)$/i }).click();
 	}
 
-	// Password stage — label is "Password".
+	// Password stage.
 	const passwordField = page
-		.getByLabel(/^password$/i)
+		.getByRole('textbox', { name: /^password$/i })
 		.or(page.locator('input[type="password"]'))
 		.first();
-	await passwordField.waitFor({ state: 'visible', timeout: 10_000 });
+	await passwordField.waitFor({ state: 'visible', timeout: 15_000 });
 	await passwordField.fill(creds.password);
 	await page.getByRole('button', { name: /^(continue|log in|sign in)$/i }).click();
 
