@@ -7,7 +7,7 @@
 # Build:    docker build -t ghcr.io/jmal1/selfservice-synthetic-ui:latest .
 # Run:      docker run --rm --env-file /opt/synthetic-ui/secrets/env \
 #               ghcr.io/jmal1/selfservice-synthetic-ui:latest
-FROM mcr.microsoft.com/playwright:v1.49.0-noble
+FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
 WORKDIR /app
 
