@@ -88,8 +88,9 @@ test('login_through_authentik', async ({ page }, testInfo) => {
 	await page.waitForURL(creds.baseURL + '/**', { timeout: 30_000 });
 
 	// Sanity-check the auth context is real: /auth/me should return
-	// a JSON body with this user's email.
-	const meResp = await page.request.get(creds.baseURL + '/api/v1/auth/me');
+	// a JSON body with this user's email. The route lives at /auth/me
+	// (top-level), NOT /api/v1/auth/me — see api routes.go.
+	const meResp = await page.request.get(creds.baseURL + '/auth/me');
 	expect(meResp.status(), 'expected /auth/me to be 200').toBe(200);
 	const me = await meResp.json();
 	expect(me.email ?? me.user?.email).toBe(creds.username);
