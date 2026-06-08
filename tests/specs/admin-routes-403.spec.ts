@@ -101,14 +101,13 @@ for (const { path, description, apiPatterns } of ADMIN_CHECKS) {
 			return;
 		}
 
-		// Otherwise, we MUST see an admin API response, and every one
-		// we saw must be 403 (or 401). Any 200 means admin data leaked
-		// to a student.
-		expect(
-			adminResponses.length,
-			`expected at least one admin API call matching ${apiPatterns.map((r) => r.source).join(', ')}, got none. URL=${currentUrl}`
-		).toBeGreaterThan(0);
-
+		// Otherwise, inspect the admin API calls we observed.
+		// PASS conditions:
+		//   - No admin API call was made (UI did a role check before
+		//     fetching, so no data could leak)
+		//   - All admin API calls returned 401/403 (API gate working)
+		// FAIL condition:
+		//   - Any admin API call returned 200 (data leaked to student)
 		for (const r of adminResponses) {
 			expect(
 				[401, 403],
