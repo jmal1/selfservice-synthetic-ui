@@ -12,10 +12,19 @@
 
 import { test, expect } from '@playwright/test';
 import { ensureStorageDir, loadCreds, storageStatePath } from '../lib/fixtures.ts';
+import { meta } from '../lib/synthetic.ts';
 
 test.describe.configure({ mode: 'serial' });
 
-test('login_through_authentik', async ({ page }) => {
+test('login_through_authentik', async ({ page }, testInfo) => {
+	meta(testInfo, {
+		title: 'Login through Authentik (OIDC end-to-end)',
+		description:
+			'/login → "Sign in with SSO" → Authentik identification → password → callback → /auth/me returns this user. Failure means a break anywhere in the full public auth chain: Caddy TLS, Authentik flows/policies/MFA-skip, Crucible /auth/callback, OIDC user upsert, or session cookie issuance.',
+		severity: 'critical',
+		runbook:
+			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-login_through_authentik-fails'
+	});
 	const creds = loadCreds();
 	ensureStorageDir();
 

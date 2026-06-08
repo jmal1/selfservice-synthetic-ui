@@ -4,8 +4,17 @@
 // empty), and there are no console errors during the load.
 
 import { test, expect } from '../lib/fixtures.ts';
+import { meta } from '../lib/synthetic.ts';
 
-test('dashboard_renders_for_synthetic_user', async ({ authedPage: page }) => {
+test('dashboard_renders_for_synthetic_user', async ({ authedPage: page }, testInfo) => {
+	meta(testInfo, {
+		title: 'Authenticated dashboard renders',
+		description:
+			'GET / as the synthetic user lands on /pods (or /dashboard) and shows the Pods/Dashboard heading with no console errors. Catches client-side hydration breaks, missing UI assets, broken pods list query, and Sentry-noisy console error regressions.',
+		severity: 'warning',
+		runbook:
+			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-dashboard_renders-fails'
+	});
 	const consoleErrors: string[] = [];
 	page.on('console', (msg) => {
 		if (msg.type() === 'error') consoleErrors.push(msg.text());

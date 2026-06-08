@@ -20,10 +20,17 @@ class PushgatewayReporter implements Reporter {
 		if (result.retry < (test.retries ?? 0) && result.status === 'failed') {
 			return;
 		}
+		const ann = test.annotations ?? [];
+		const grab = (type: string): string | undefined =>
+			ann.find((a) => a.type === type)?.description ?? undefined;
 		this.results.push({
 			check: test.title,
 			success: result.status === 'passed' ? 1 : 0,
-			durationSeconds: result.duration / 1000
+			durationSeconds: result.duration / 1000,
+			title: grab('synthetic-title'),
+			description: grab('synthetic-description'),
+			severity: grab('synthetic-severity'),
+			runbook: grab('synthetic-runbook')
 		});
 	}
 

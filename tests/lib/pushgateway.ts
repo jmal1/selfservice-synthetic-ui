@@ -15,6 +15,11 @@ export interface CheckResult {
 	check: string;
 	success: 0 | 1;
 	durationSeconds: number;
+	// Metadata for the *_info series — populated from test annotations.
+	title?: string;
+	description?: string;
+	severity?: string;
+	runbook?: string;
 }
 
 function escapeLabel(v: string): string {
@@ -29,13 +34,27 @@ function buildExposition(results: CheckResult[]): string {
 		'# HELP crucible_synthetic_ui_check_duration_seconds Wall-clock duration of the check',
 		'# TYPE crucible_synthetic_ui_check_duration_seconds gauge',
 		'# HELP crucible_synthetic_ui_check_last_run_timestamp Unix epoch of the most recent run',
-		'# TYPE crucible_synthetic_ui_check_last_run_timestamp gauge'
+		'# TYPE crucible_synthetic_ui_check_last_run_timestamp gauge',
+		'# HELP crucible_synthetic_ui_check_info Per-check metadata (title, description, severity, runbook). Always 1; join other series on check.',
+		'# TYPE crucible_synthetic_ui_check_info gauge'
 	];
 	for (const r of results) {
 		const lbl = `{check="${escapeLabel(r.check)}",layer="ui"}`;
 		lines.push(`crucible_synthetic_ui_check_success${lbl} ${r.success}`);
 		lines.push(`crucible_synthetic_ui_check_duration_seconds${lbl} ${r.durationSeconds.toFixed(3)}`);
 		lines.push(`crucible_synthetic_ui_check_last_run_timestamp${lbl} ${now}`);
+		// Always emit info — even if metadata is missing — so the dashboard
+		// joins always succeed and a missing title is visibly empty rather
+		// than collapsing the row entirely.
+		const infoLbl = [
+			`check="${escapeLabel(r.check)}"`,
+			`layer="ui"`,
+			`title="${escapeLabel(r.title ?? r.check)}"`,
+			`description="${escapeLabel(r.description ?? '')}"`,
+			`severity="${escapeLabel(r.severity ?? 'warning')}"`,
+			`runbook="${escapeLabel(r.runbook ?? '')}"`
+		].join(',');
+		lines.push(`crucible_synthetic_ui_check_info{${infoLbl}} 1`);
 	}
 	const anyFail = results.some((r) => r.success === 0) ? 0 : 1;
 	lines.push(

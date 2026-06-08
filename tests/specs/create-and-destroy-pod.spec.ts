@@ -14,12 +14,20 @@
 //   5. Confirm; wait for the pod to disappear from /pods
 
 import { test, expect } from '../lib/fixtures.ts';
+import { meta } from '../lib/synthetic.ts';
 
 const TEMPLATE = process.env.SYNTHETIC_TEMPLATE_NAME;
 
 test.skip(!TEMPLATE, 'SYNTHETIC_TEMPLATE_NAME not configured (S1.2 not shipped yet)');
 
-test('create_and_destroy_synthetic_pod', async ({ authedPage: page }) => {
+test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) => {
+	meta(testInfo, {
+		title: 'Create + destroy a synthetic-noop pod (full lifecycle)',
+		description: `Launches a pod from template "${TEMPLATE ?? '?'}" via the UI, waits for ready status, then destroys it. The deepest end-to-end check: exercises the provisioning worker, vCenter clone API, NetBird onboarding (if applicable), and the destroy path. Failure here usually means the worker is stalled or vCenter is unhappy — cross-check /api/v1/healthz on the worker.`,
+		severity: 'critical',
+		runbook:
+			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-create_and_destroy_pod-fails'
+	});
 	test.setTimeout(8 * 60_000); // 8 minutes — provisioning is slow
 
 	await page.goto('/pods/new');
