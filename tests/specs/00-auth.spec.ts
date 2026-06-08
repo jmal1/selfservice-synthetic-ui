@@ -62,11 +62,17 @@ test('login_through_authentik', async ({ page }) => {
 	}
 	await page.getByRole('button', { name: /^(continue|log in|sign in)$/i }).click();
 
-	// Authentik may show a consent screen on the very first login;
-	// click through if it does.
-	const consent = page.locator('button[type="submit"]:has-text("Continue")');
-	if (await consent.isVisible({ timeout: 3_000 }).catch(() => false)) {
-		await consent.click();
+	// Authentik *may* show a consent screen on the very first OIDC grant;
+	// click through ONLY if we're still on authentik.jmal.io. Otherwise the
+	// browser has already navigated back to Crucible and any stale match on
+	// "Continue" will detach mid-click. The race here matters: if MFA is
+	// skipped and the redirect happens immediately after login, isVisible
+	// can briefly resolve True on the now-detaching login button.
+	if (page.url().includes('authentik.jmal.io')) {
+		const consent = page.locator('button[type="submit"]:has-text("Continue")');
+		if (await consent.isVisible({ timeout: 3_000 }).catch(() => false)) {
+			await consent.click().catch(() => { /* navigated away */ });
+		}
 	}
 
 	// Back on the Crucible UI.
