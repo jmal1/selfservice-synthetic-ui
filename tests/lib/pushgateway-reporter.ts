@@ -20,6 +20,11 @@ class PushgatewayReporter implements Reporter {
 		if (result.retry < (test.retries ?? 0) && result.status === 'failed') {
 			return;
 		}
+		// Skipped tests don't represent a pass or a fail — don't push
+		// success=0 for them or they'd show as red on the dashboard.
+		if (result.status === 'skipped') {
+			return;
+		}
 		const ann = test.annotations ?? [];
 		const grab = (type: string): string | undefined =>
 			ann.find((a) => a.type === type)?.description ?? undefined;
