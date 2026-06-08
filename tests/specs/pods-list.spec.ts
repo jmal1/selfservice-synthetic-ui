@@ -27,14 +27,23 @@ test('dashboard_renders_for_synthetic_user', async ({ authedPage: page }, testIn
 	// it lands on /pods.
 	await expect(page).toHaveURL(/\/(pods|dashboard)?\/?$/, { timeout: 15_000 });
 
-	// Either the "No pods yet" empty state or a pods table heading.
-	const hasPodsHeading = await page
+	// Look for any of the real headings emitted by the dashboard ("/")
+	// or the pods page ("/pods"):
+	//   - "Dashboard" (h1 on /)
+	//   - "My Labs" (h1 on /pods)
+	//   - "My Environments" (h2 section on /)
+	// We must use expect().toBeVisible() rather than locator.isVisible()
+	// because the latter does not auto-retry and races against SvelteKit
+	// client-side hydration (the h1 appears within ~200-500ms but
+	// page.goto only waits for the 'load' event, not hydration).
+	const heading = page
 		.locator('h1, h2')
-		.filter({ hasText: /pods|dashboard/i })
-		.first()
-		.isVisible({ timeout: 10_000 })
-		.catch(() => false);
-	expect(hasPodsHeading, 'expected a Pods or Dashboard heading on the home page').toBe(true);
+		.filter({ hasText: /dashboard|labs|environments|pods/i })
+		.first();
+	await expect(
+		heading,
+		'expected a Dashboard / Labs / Environments / Pods heading on the home page'
+	).toBeVisible({ timeout: 10_000 });
 
 	// Allow benign console noise (warnings, deprecations) but flag
 	// genuine error-level messages that didn't originate from a known
