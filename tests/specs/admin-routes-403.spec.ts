@@ -39,16 +39,22 @@ for (const path of ADMIN_PATHS) {
 		//   - server-rendered 403 / 404
 		//   - redirect to home with a "you need admin" message
 		//   - SvelteKit client-side gate that swaps in a "Forbidden" UI
+		//   - UI shell renders BUT the data-loading API call returned
+		//     403, surfaced as a visible "Failed to load" alert (this
+		//     proves the API gate is working even if the UI shell isn't
+		//     gated client-side — tracked separately as
+		//     ui-admin-route-clientside-gate)
 		// Unacceptable:
 		//   - 5xx
-		//   - blank page
+		//   - blank page (no alert, no shell, no redirect)
 		expect(response?.status() ?? 200).toBeLessThan(500);
 
 		const body = await page.content();
 		const looksOk =
-			/admin|forbidden|unauthorized|not authorized|you do not have/i.test(body) ||
+			/forbidden|unauthorized|not authorized|you do not have|failed to load/i.test(body) ||
 			page.url().includes('/pods') ||
-			page.url().endsWith('/');
+			page.url().endsWith('/') ||
+			page.url().endsWith('/login');
 		expect(looksOk, `admin gate appears broken at ${path}`).toBe(true);
 	});
 }

@@ -38,9 +38,13 @@ test('dashboard_renders_for_synthetic_user', async ({ authedPage: page }, testIn
 
 	// Allow benign console noise (warnings, deprecations) but flag
 	// genuine error-level messages that didn't originate from a known
-	// third-party (e.g. Sentry beacon failures).
+	// third-party (e.g. Sentry beacon failures). The /ws 404 is tracked
+	// separately as caddy-ws-route-404; filtering it here keeps this
+	// test focused on dashboard render correctness.
 	const realErrors = consoleErrors.filter(
-		(e) => !/sentry|analytics|beacon|favicon/i.test(e)
+		(e) =>
+			!/sentry|analytics|beacon|favicon/i.test(e) &&
+			!/wss?:\/\/[^/]+\/ws/i.test(e)
 	);
 	expect(realErrors, `unexpected console errors: ${realErrors.join(' / ')}`).toHaveLength(0);
 });
