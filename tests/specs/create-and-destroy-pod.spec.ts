@@ -35,7 +35,14 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	// 3min wizard + 4min provisioning + 90s destroy + slack.
 	test.setTimeout(8 * 60_000);
 
-	const envName = `synthetic-${Date.now()}`;
+	// Use the SyntheticPodNamePrefix ("synthetic-noop-") so that any
+	// leaked pod from a failed UI run gets swept by the synthetic_janitor
+	// CronJob — selfservice-api filters by HasPrefix on this exact string
+	// (internal/synthetic/checks/lifecycle.go:SyntheticPodNamePrefix).
+	// Without "noop-" leaked pods accumulate until the synthetic user's
+	// pod quota is exhausted, which silently breaks the pod_lifecycle
+	// API check (HTTP 409 "pods quota exceeded").
+	const envName = `synthetic-noop-${Date.now()}`;
 
 	// ── Step 1: Destination ────────────────────────────────────────────
 	await page.goto('/pods/new');
