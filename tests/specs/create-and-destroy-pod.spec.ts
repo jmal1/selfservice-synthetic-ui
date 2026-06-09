@@ -51,18 +51,17 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	await page.getByRole('button', { name: /^Next$/ }).click();
 
 	// ── Step 4: Templates ──────────────────────────────────────────────
-	// Each template card is a <div> with an <h3> for the name and an
-	// "Increase quantity" button (aria-label) next to its qty input.
-	// Locator finds the card whose heading matches TEMPLATE, then the
-	// "+" button inside that card.
+	// Each template card is a rounded <div> (class includes "rounded-2xl")
+	// containing an <h3> for the name and an "Increase quantity" button.
+	// Plain `locator('div').filter(...)` matches every ancestor div so we
+	// anchor on the unique card class.
 	const templateCard = page
-		.locator('div')
-		.filter({ has: page.getByRole('heading', { name: new RegExp(`^${TEMPLATE}$`, 'i') }) })
-		.first();
+		.locator('div.rounded-2xl')
+		.filter({ has: page.getByRole('heading', { name: new RegExp(`^${TEMPLATE}$`, 'i') }) });
 	await expect(templateCard, `template "${TEMPLATE}" card not visible`).toBeVisible({
 		timeout: 10_000
 	});
-	await templateCard.getByRole('button', { name: /Increase quantity/i }).click();
+	await templateCard.getByRole('button', { name: 'Increase quantity', exact: true }).click();
 	await page.getByRole('button', { name: /^Next$/ }).click();
 
 	// ── Step 5: Resources ──────────────────────────────────────────────
