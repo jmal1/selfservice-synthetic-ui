@@ -71,18 +71,16 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	// ── Step 6: Review → Deploy ────────────────────────────────────────
 	await page.getByRole('button', { name: /Deploy Environment/i }).click();
 
-	// After successful create the app navigates back to "/" (dashboard).
-	// The new pod appears in the list as a row containing envName; from
-	// there we click the "View pod details" link to land on /pods/{id}.
-	await page.waitForURL((url) => url.pathname === '/', { timeout: 60_000 });
-
+	// After successful create the app does goto('/') (SvelteKit soft nav,
+	// no load event). Don't waitForURL; just wait for the new pod's row
+	// to appear in the dashboard list and click into it.
 	const newPodRow = page
 		.locator('li, tr, div')
 		.filter({ hasText: envName })
 		.filter({ has: page.getByRole('link', { name: /View pod details/i }) })
 		.first();
 	await expect(newPodRow, `new pod row "${envName}" not visible on dashboard`).toBeVisible({
-		timeout: 30_000
+		timeout: 60_000
 	});
 	await newPodRow.getByRole('link', { name: /View pod details/i }).first().click();
 	await page.waitForURL(/\/pods\/[a-f0-9-]+/, { timeout: 15_000 });
