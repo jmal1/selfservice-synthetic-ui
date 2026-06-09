@@ -56,7 +56,7 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	// Plain `locator('div').filter(...)` matches every ancestor div so we
 	// anchor on the unique card class.
 	const templateCard = page
-		.locator('div.rounded-2xl')
+		.locator('div.rounded-2xl.p-5')
 		.filter({ has: page.getByRole('heading', { name: new RegExp(`^${TEMPLATE}$`, 'i') }) });
 	await expect(templateCard, `template "${TEMPLATE}" card not visible`).toBeVisible({
 		timeout: 10_000
