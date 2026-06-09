@@ -71,8 +71,21 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	// ── Step 6: Review → Deploy ────────────────────────────────────────
 	await page.getByRole('button', { name: /Deploy Environment/i }).click();
 
-	// ── Wait for redirect to /pods/{id} ────────────────────────────────
-	await page.waitForURL(/\/pods\/[a-f0-9-]+/, { timeout: 60_000 });
+	// After successful create the app navigates back to "/" (dashboard).
+	// The new pod appears in the list as a row containing envName; from
+	// there we click the "View pod details" link to land on /pods/{id}.
+	await page.waitForURL((url) => url.pathname === '/', { timeout: 60_000 });
+
+	const newPodRow = page
+		.locator('li, tr, div')
+		.filter({ hasText: envName })
+		.filter({ has: page.getByRole('link', { name: /View pod details/i }) })
+		.first();
+	await expect(newPodRow, `new pod row "${envName}" not visible on dashboard`).toBeVisible({
+		timeout: 30_000
+	});
+	await newPodRow.getByRole('link', { name: /View pod details/i }).click();
+	await page.waitForURL(/\/pods\/[a-f0-9-]+/, { timeout: 15_000 });
 
 	// ── Wait for status badge to leave provisioning ────────────────────
 	// StatusBadge text shows the pod.status verbatim; the worker walks
