@@ -1,61 +1,93 @@
 // create-and-destroy-pod.spec.ts — the deepest UI synthetic check.
 //
-// This test only runs if SYNTHETIC_TEMPLATE_NAME is set in the env
-// (the README's "synthetic-noop" template from S1.2 isn't created yet —
-// when it is, set SYNTHETIC_TEMPLATE_NAME=synthetic-noop on netbirdv01
-// and this test becomes active).
+// Activated when SYNTHETIC_TEMPLATE_NAME is set in the env on the runner
+// (typically synthetic-noop). The /pods/new route is a multi-step wizard
+// post-T4; this spec walks it step by step.
 //
-// Flow:
-//   1. Navigate to /pods/new
-//   2. Pick the synthetic-noop template
-//   3. Submit; wait for the pod to reach "ready" (poll the UI every 5s,
-//      max 5 min)
-//   4. Navigate to the pod detail, click Destroy
-//   5. Confirm; wait for the pod to disappear from /pods
+// Wizard path (custom flow):
+//   1. Destination -> "New Environment"
+//   2. Mode        -> "Custom Environment"
+//   3. Name        -> environment name input
+//   4. Templates   -> increase quantity to 1 for the synthetic template card
+//   5. Resources   -> defaults are pre-filled from the template, just Next
+//   6. Review      -> "Deploy Environment"
+// Then:
+//   - Wait for /pods/{id}
+//   - Wait for status badge to show active/ready
+//   - Click "Delete Pod" then "Confirm Delete"
+//   - Wait for landing back on /pods
 
 import { test, expect } from '../lib/fixtures.ts';
 import { meta } from '../lib/synthetic.ts';
 
 const TEMPLATE = process.env.SYNTHETIC_TEMPLATE_NAME;
 
-test.skip(!TEMPLATE, 'SYNTHETIC_TEMPLATE_NAME not configured (S1.2 not shipped yet)');
+test.skip(!TEMPLATE, 'SYNTHETIC_TEMPLATE_NAME not configured');
 
 test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) => {
 	meta(testInfo, {
 		title: 'Create + destroy a synthetic-noop pod (full lifecycle)',
-		description: `Launches a pod from template "${TEMPLATE ?? '?'}" via the UI, waits for ready status, then destroys it. The deepest end-to-end check: exercises the provisioning worker, vCenter clone API, NetBird onboarding (if applicable), and the destroy path. Failure here usually means the worker is stalled or vCenter is unhappy — cross-check /api/v1/healthz on the worker.`,
+		description: `Walks the multi-step /pods/new wizard with template "${TEMPLATE ?? '?'}", waits for active status, then destroys via the pod detail page. Deepest end-to-end UI check: exercises wizard state machine, provisioning worker, vCenter clone, NetBird onboarding, and destroy path. A failure usually means the wizard broke (selectors changed) or the worker is stalled — cross-check pod_lifecycle API synthetic and worker logs.`,
 		severity: 'critical',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-create_and_destroy_pod-fails'
 	});
-	test.setTimeout(8 * 60_000); // 8 minutes — provisioning is slow
+	// 3min wizard + 4min provisioning + 90s destroy + slack.
+	test.setTimeout(8 * 60_000);
 
+	const envName = `synthetic-${Date.now()}`;
+
+	// ── Step 1: Destination ────────────────────────────────────────────
 	await page.goto('/pods/new');
+	await page.getByRole('button', { name: /New Environment/i }).click();
+	await page.getByRole('button', { name: /^Next$/ }).click();
 
-	// The synthetic-noop template card; clicking it should take us
-	// through whatever launch flow the UI defines.
-	const card = page.getByRole('button', { name: new RegExp(TEMPLATE!, 'i') }).first();
-	await expect(card, `synthetic template "${TEMPLATE}" not visible`).toBeVisible({
+	// ── Step 2: Mode ───────────────────────────────────────────────────
+	await page.getByRole('button', { name: /Custom Environment/i }).click();
+	await page.getByRole('button', { name: /^Next$/ }).click();
+
+	// ── Step 3: Name ───────────────────────────────────────────────────
+	await page.getByLabel(/Environment Name/i).fill(envName);
+	await page.getByRole('button', { name: /^Next$/ }).click();
+
+	// ── Step 4: Templates ──────────────────────────────────────────────
+	// Each template card is a <div> with an <h3> for the name and an
+	// "Increase quantity" button (aria-label) next to its qty input.
+	// Locator finds the card whose heading matches TEMPLATE, then the
+	// "+" button inside that card.
+	const templateCard = page
+		.locator('div')
+		.filter({ has: page.getByRole('heading', { name: new RegExp(`^${TEMPLATE}$`, 'i') }) })
+		.first();
+	await expect(templateCard, `template "${TEMPLATE}" card not visible`).toBeVisible({
 		timeout: 10_000
 	});
-	await card.click();
+	await templateCard.getByRole('button', { name: /Increase quantity/i }).click();
+	await page.getByRole('button', { name: /^Next$/ }).click();
 
-	// Either an inline form or a launch button.
-	const launch = page.getByRole('button', { name: /launch|create|start/i }).first();
-	await launch.click();
+	// ── Step 5: Resources ──────────────────────────────────────────────
+	// VM inputs are pre-populated from template defaults; just continue.
+	await page.getByRole('button', { name: /^Next$/ }).click();
 
-	// Wait for "ready" or "active" status badge in the pod detail page.
+	// ── Step 6: Review → Deploy ────────────────────────────────────────
+	await page.getByRole('button', { name: /Deploy Environment/i }).click();
+
+	// ── Wait for redirect to /pods/{id} ────────────────────────────────
 	await page.waitForURL(/\/pods\/[a-f0-9-]+/, { timeout: 60_000 });
+
+	// ── Wait for status badge to leave provisioning ────────────────────
+	// StatusBadge text shows the pod.status verbatim; the worker walks
+	// pending -> provisioning -> active for happy path. We accept any
+	// terminal "running" state.
 	await expect(
-		page
-			.locator(':text-matches("(?i)(ready|active|running)")', { hasText: /ready|active|running/i })
-			.first()
+		page.getByText(/\b(active|ready|running)\b/i).first()
 	).toBeVisible({ timeout: 5 * 60_000 });
 
-	// Destroy.
-	await page.getByRole('button', { name: /destroy|delete/i }).first().click();
-	await page.getByRole('button', { name: /yes|confirm|delete/i }).first().click();
+	// ── Destroy: two-step confirm ──────────────────────────────────────
+	await page.getByRole('button', { name: /^Delete Pod$/ }).click();
+	await page.getByRole('button', { name: /^Confirm Delete$/ }).click();
 
-	// Should land back on /pods, and our pod should disappear within 60s.
-	await page.waitForURL(/\/pods\/?$/, { timeout: 30_000 });
+	// ── Should land back on /pods within 60s ───────────────────────────
+	await page.waitForURL(/\/pods\/?(?:$|\?)/, { timeout: 60_000 });
 });
+
