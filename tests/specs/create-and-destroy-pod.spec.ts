@@ -97,7 +97,9 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	await page.getByRole('button', { name: /^Delete Pod$/ }).click();
 	await page.getByRole('button', { name: /^Confirm Delete$/ }).click();
 
-	// ── Should land back on /pods within 60s ───────────────────────────
-	await page.waitForURL(/\/pods\/?(?:$|\?)/, { timeout: 60_000 });
+	// ── Should land back on / (handleDeletePod calls goto('/')) ─────────
+	await expect(page.getByRole('heading', { name: /Dashboard/i })).toBeVisible({
+		timeout: 60_000
+	});
 });
 
