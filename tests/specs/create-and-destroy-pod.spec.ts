@@ -84,7 +84,7 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	await expect(newPodRow, `new pod row "${envName}" not visible on dashboard`).toBeVisible({
 		timeout: 30_000
 	});
-	await newPodRow.getByRole('link', { name: /View pod details/i }).click();
+	await newPodRow.getByRole('link', { name: /View pod details/i }).first().click();
 	await page.waitForURL(/\/pods\/[a-f0-9-]+/, { timeout: 15_000 });
 
 	// ── Wait for status badge to leave provisioning ────────────────────
