@@ -36,6 +36,15 @@ test('dashboard_renders_for_synthetic_user', async ({ authedPage: page }, testIn
 	// because the latter does not auto-retry and races against SvelteKit
 	// client-side hydration (the h1 appears within ~200-500ms but
 	// page.goto only waits for the 'load' event, not hydration).
+	//
+	// Timeout note: 20s (Playwright's default) instead of 10s. A 10s
+	// budget produced a ~20% flake rate when the synthetic CronJob hit
+	// the page cold (no warm JS chunk cache + a burst of three
+	// API requests fired in onMount — getPods + getResourceUsage +
+	// getMyJobs). The hydration itself is fast; the network burst on
+	// the very first authenticated paint is what occasionally pushes
+	// total-time past 10s. 20s gives margin while still failing fast
+	// enough to catch a genuine hydration break.
 	const heading = page
 		.locator('h1, h2')
 		.filter({ hasText: /dashboard|labs|environments|pods/i })
@@ -43,7 +52,7 @@ test('dashboard_renders_for_synthetic_user', async ({ authedPage: page }, testIn
 	await expect(
 		heading,
 		'expected a Dashboard / Labs / Environments / Pods heading on the home page'
-	).toBeVisible({ timeout: 10_000 });
+	).toBeVisible({ timeout: 20_000 });
 
 	// Allow benign console noise (warnings, deprecations) but flag
 	// genuine error-level messages that didn't originate from a known
