@@ -17,6 +17,7 @@ Authentik OIDC redirect dance.
 | `workflow-list.spec.ts`       | `/admin/workflows` 403 for non-admins (synthetic is a student role)  |
 | `webmks-console.spec.ts`      | WebMKS console iframe opens + WebSocket connects                     |
 | `healthz.spec.ts`             | Anonymous `/healthz` returns 200 with `status: ok`                   |
+| `zz-logout.spec.ts`           | Sign out terminates the session and does not silently re-auth (runs last) |
 
 Each spec records pass/fail + duration and pushes to the lab
 Pushgateway with `layer=ui` so Grafana can compare `layer=api` vs
