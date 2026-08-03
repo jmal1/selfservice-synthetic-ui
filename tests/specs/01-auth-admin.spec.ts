@@ -83,6 +83,18 @@ test('login_admin_through_authentik', async ({ page }, testInfo) => {
 	const me = await meResp.json();
 	expect(me.email ?? me.user?.email).toBe(ADMIN_USERNAME);
 
+	// Assert the ROLE, not just that a session exists. Without this the spec
+	// claims to detect "the instructor role was removed from the account" but
+	// would happily pass for a demoted student account -- and the three
+	// dependent specs would then fail with confusing "heading not visible"
+	// errors that point at the UI rather than at the account.
+	const role = me.role ?? me.user?.role;
+	expect(
+		['instructor', 'admin'],
+		`admin synthetic account must hold the instructor or admin role, got "${role}". ` +
+			'The admin-authenticated UI checks cannot pass without it.'
+	).toContain(role);
+
 	await page.context().storageState({ path: adminStorageStatePath() });
 
 	const elapsed = (Date.now() - start) / 1000;
