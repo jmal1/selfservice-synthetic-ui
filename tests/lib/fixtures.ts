@@ -36,6 +36,44 @@ export function storageStatePath(): string {
 	return STORAGE_FILE;
 }
 
+// ── Admin / instructor fixture ─────────────────────────────────────────────
+//
+// Some admin-facing pages (/admin/images, /admin/templates/new, /admin/runs)
+// require the instructor or admin role. The student synthetic account is
+// explicitly blocked from these routes (tested by admin-routes-403.spec.ts),
+// so a separate authenticated session is needed to verify they actually work.
+//
+// Usage:
+//   import { adminTest, expect } from '../lib/fixtures.ts';
+//   const ADMIN_USERNAME = process.env.SYNTHETIC_ADMIN_USERNAME;
+//   adminTest.skip(!ADMIN_USERNAME, 'SYNTHETIC_ADMIN_USERNAME not configured');
+//   adminTest('my_check', async ({ authedAdminPage: page }, testInfo) => { ... });
+//
+// The storage state is created by 01-auth-admin.spec.ts; set
+// SYNTHETIC_ADMIN_USERNAME and SYNTHETIC_ADMIN_PASSWORD in the secrets env
+// file alongside the student credentials.
+
+const ADMIN_STORAGE_FILE = path.resolve('.auth', 'synthetic-admin-state.json');
+
+export const adminTest = base.extend<{ authedAdminPage: Page }>({
+	authedAdminPage: async ({ browser }, use) => {
+		if (!fs.existsSync(ADMIN_STORAGE_FILE)) {
+			throw new Error(
+				`No admin/instructor auth state at ${ADMIN_STORAGE_FILE}. ` +
+					`Set SYNTHETIC_ADMIN_USERNAME + SYNTHETIC_ADMIN_PASSWORD and run 01-auth-admin.spec.ts first.`
+			);
+		}
+		const context = await browser.newContext({ storageState: ADMIN_STORAGE_FILE });
+		const page = await context.newPage();
+		await use(page);
+		await context.close();
+	}
+});
+
+export function adminStorageStatePath(): string {
+	return ADMIN_STORAGE_FILE;
+}
+
 export function ensureStorageDir(): void {
 	const dir = path.dirname(STORAGE_FILE);
 	if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
