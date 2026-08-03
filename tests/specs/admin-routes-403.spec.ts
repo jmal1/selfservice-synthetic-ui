@@ -19,43 +19,61 @@ interface AdminCheck {
 	// fetches on load. We only need ONE matching response to be 403 for
 	// the gate to be considered working.
 	apiPatterns: RegExp[];
+	// The endpoint we call DIRECTLY with the student session. This is the
+	// real security boundary — see the probe at the bottom of the test.
+	apiPath: string;
 }
 
 const ADMIN_CHECKS: AdminCheck[] = [
 	{
 		path: '/admin/workflows',
 		description: 'Workflow definitions admin page',
-		apiPatterns: [/\/api\/v1\/admin\/workflows(\?|$)/]
+		apiPatterns: [/\/api\/v1\/admin\/workflows(\?|$)/],
+		apiPath: '/api/v1/admin/workflows'
 	},
 	{
 		path: '/admin/templates',
 		description: 'Template management admin page',
-		apiPatterns: [/\/api\/v1\/admin\/templates(\?|$)/]
+		apiPatterns: [/\/api\/v1\/admin\/templates(\?|$)/],
+		apiPath: '/api/v1/admin/templates'
 	},
 	{
 		path: '/admin/jobs',
 		description: 'Background job queue admin page',
-		apiPatterns: [/\/api\/v1\/admin\/jobs(\?|$)/]
+		apiPatterns: [/\/api\/v1\/admin\/jobs(\?|$)/],
+		apiPath: '/api/v1/admin/jobs'
 	},
 	{
 		path: '/admin/audit',
 		description: 'Audit log admin page',
-		apiPatterns: [/\/api\/v1\/admin\/audit(\?|$)/]
+		apiPatterns: [/\/api\/v1\/admin\/audit(\?|$)/],
+		apiPath: '/api/v1/admin/audit'
 	},
 	{
 		path: '/admin/users',
 		description: 'User management admin page',
-		apiPatterns: [/\/api\/v1\/admin\/users(\?|$)/]
+		apiPatterns: [/\/api\/v1\/admin\/users(\?|$)/],
+		apiPath: '/api/v1/admin/users'
+	},
+	{
+		// The image-upload endpoints hand out presigned MinIO URLs. If a
+		// student could reach them they could write arbitrary objects into
+		// the staging bucket and have them imported onto the vCenter ISO
+		// datastore, so this gate matters more than most.
+		path: '/admin/images',
+		description: 'VM image upload/library admin page',
+		apiPatterns: [/\/api\/v1\/admin\/images(\?|\/|$)/],
+		apiPath: '/api/v1/admin/images'
 	}
 ];
 
-for (const { path, description, apiPatterns } of ADMIN_CHECKS) {
+for (const { path, description, apiPatterns, apiPath } of ADMIN_CHECKS) {
 	test(`admin_route_protected_${path.replace(/\//g, '_').replace(/^_/, '')}`, async ({
 		authedPage: page
 	}, testInfo) => {
 		meta(testInfo, {
 			title: `RBAC: student blocked from ${path}`,
-			description: `Student-role synthetic user visits ${path} (${description}). The corresponding admin API endpoint MUST return 403 (never 200, never 5xx). The UI shell may render — that is tracked separately — but the API gate is the real security boundary.`,
+			description: `Student-role synthetic user visits ${path} (${description}), then calls ${apiPath} directly with its real session cookies. That endpoint MUST return 401/403 (never 200, never 5xx). The direct call is the meaningful assertion: a client-side redirect away from the admin page proves nothing to anyone holding a session cookie and curl.`,
 			severity: 'warning',
 			runbook:
 				'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-admin_route_protected-fails'
@@ -89,31 +107,52 @@ for (const { path, description, apiPatterns } of ADMIN_CHECKS) {
 			// to /pods). Fall through to the assertions below.
 		}
 
-		// If the page redirected to a non-admin route, the gate worked
-		// without ever fetching admin data — that's a pass.
+		// If the page redirected to a non-admin route, the client-side gate
+		// worked without ever fetching admin data. That is good UX, but it
+		// is NOT proof that the server is protecting anything — so we no
+		// longer return early here. See the direct API probe below.
 		const currentUrl = page.url();
 		const redirectedAway =
 			!currentUrl.includes('/admin/') ||
 			currentUrl.includes('/login') ||
 			currentUrl.endsWith('/pods');
 
-		if (redirectedAway) {
-			return;
-		}
-
-		// Otherwise, inspect the admin API calls we observed.
-		// PASS conditions:
-		//   - No admin API call was made (UI did a role check before
-		//     fetching, so no data could leak)
-		//   - All admin API calls returned 401/403 (API gate working)
-		// FAIL condition:
-		//   - Any admin API call returned 200 (data leaked to student)
+		// Inspect whatever admin API calls the navigation did trigger.
+		// FAIL condition: any admin API call returned 200 (data leaked).
 		for (const r of adminResponses) {
 			expect(
 				[401, 403],
 				`admin API call ${r.url} returned ${r.status} (expected 401/403). Student role MUST NOT receive admin data.`
 			).toContain(r.status);
 		}
+
+		// ── The actual security boundary ────────────────────────────────
+		// A client-side gate now redirects students away before the page
+		// fires any admin request, so the loop above frequently inspects an
+		// EMPTY list and passes vacuously. That silently hollowed out this
+		// entire check: it would stay green even if the API stopped gating
+		// role altogether.
+		//
+		// So call the endpoint directly, using the student's real session
+		// cookies. A redirect in the browser proves nothing to an attacker
+		// holding a session token and curl.
+		const apiResp = await page.request.get(apiPath, {
+			headers: { accept: 'application/json' },
+			failOnStatusCode: false
+		});
+		expect(
+			[401, 403],
+			`GET ${apiPath} returned ${apiResp.status()} for a student session (expected 401/403). ` +
+				`The client-side redirect to "${currentUrl}" is cosmetic — anyone with a session cookie ` +
+				'can call this endpoint directly, so the server MUST reject it.'
+		).toContain(apiResp.status());
+
+		// Record which layers are actually enforcing, so a future reader can
+		// tell a real pass from a cosmetic one.
+		testInfo.annotations.push({
+			type: 'rbac-enforcement',
+			description: `client-side redirect: ${redirectedAway}; api status: ${apiResp.status()}`
+		});
 	});
 }
 
