@@ -49,7 +49,9 @@ adminTest('template_wizard_iso_option', async ({ authedAdminPage: page }, testIn
 	).toBeVisible({ timeout: 15_000 });
 
 	// Wait for the source data to finish loading. The select is wired to
-	// loadingSources which clears when all four parallel API calls complete.
+	// loadingSources which clears when all three parallel API calls complete.
+	// (adminListVCenterISOs now returns the merged ISO list including uploaded ones;
+	// the separate adminListImages call was removed from the wizard in lane 3.)
 	// We wait for the select to become non-disabled rather than polling loadingSources.
 	//
 	// Locate by its value-set: the select that specifically contains an ISO option.
@@ -66,7 +68,7 @@ adminTest('template_wizard_iso_option', async ({ authedAdminPage: page }, testIn
 	await expect(
 		sourceSelect,
 		'Source-type select must not be disabled — loadingSources may never have cleared; ' +
-			'check adminListVCenterISOs / adminListImages API calls for errors'
+			'check adminListVCenterISOs API call for errors'
 	).not.toBeDisabled({ timeout: 15_000 });
 
 	// Enumerate option texts to assert "ISO install" is present. This is a stronger
