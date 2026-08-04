@@ -68,4 +68,14 @@ adminTest('image_library_loads', async ({ authedAdminPage: page }, testInfo) => 
 		'"Staged images" section heading must be present — its absence indicates the image ' +
 			'list card section was removed from the page'
 	).toBeVisible({ timeout: 10_000 });
+
+	// The "Status" column header in the Staged images table is added as part of the
+	// lifecycle-state display feature (lane 3). Its presence proves that the table
+	// still includes the status column, so operators can see uploading / importing /
+	// imported / error state for each image.
+	await expect(
+		page.getByRole('columnheader', { name: 'Status' }),
+		'"Status" column header must be visible in the Staged images table — its absence means ' +
+			'the lifecycle-state column was removed, breaking the operator visibility feature'
+	).toBeVisible({ timeout: 10_000 });
 });
