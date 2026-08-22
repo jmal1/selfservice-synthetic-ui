@@ -7,7 +7,7 @@
 // instructor-role session, and all three call `adminTest.skip()` when
 // SYNTHETIC_ADMIN_USERNAME is unset. The Pushgateway reporter deliberately
 // does not push a result for a skipped test (pushgateway-reporter.ts), and
-// pushResults POSTs the whole metric family, which Pushgateway replaces
+// pushResults PUTs the whole metric group, which Pushgateway replaces
 // wholesale. So an environment without instructor credentials does not get
 // three RED checks - it gets three checks that DO NOT EXIST.
 //

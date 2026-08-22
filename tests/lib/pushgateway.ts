@@ -10,6 +10,7 @@
 
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL ?? 'http://pushgateway.lab.jmal.io:9091';
 const JOB = process.env.PUSHGATEWAY_JOB ?? 'crucible_synthetic_ui';
+export const PUSHGATEWAY_REPLACEMENT_METHOD = 'PUT';
 
 export interface CheckResult {
 	check: string;
@@ -22,12 +23,21 @@ export interface CheckResult {
 	runbook?: string;
 }
 
+export function countExpectedChecks(
+	tests: ReadonlyArray<{ expectedStatus: string }>
+): number {
+	return tests.filter((test) => test.expectedStatus !== 'skipped').length;
+}
+
 function escapeLabel(v: string): string {
 	return v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
-function buildExposition(results: CheckResult[]): string {
-	const now = Math.floor(Date.now() / 1000);
+export function buildExposition(
+	results: CheckResult[],
+	expectedCheckCount = results.length,
+	now = Math.floor(Date.now() / 1000)
+): string {
 	const lines: string[] = [
 		'# HELP crucible_synthetic_ui_check_success 1 if the check passed, 0 otherwise',
 		'# TYPE crucible_synthetic_ui_check_success gauge',
@@ -56,29 +66,36 @@ function buildExposition(results: CheckResult[]): string {
 		].join(',');
 		lines.push(`crucible_synthetic_ui_check_info{${infoLbl}} 1`);
 	}
-	const anyFail = results.some((r) => r.success === 0) ? 0 : 1;
+	const coverage = expectedCheckCount === 0 ? 1 : results.length / expectedCheckCount;
+	const anyFail =
+		results.some((r) => r.success === 0) || results.length !== expectedCheckCount ? 0 : 1;
 	lines.push(
 		`crucible_synthetic_ui_overall_success{layer="ui"} ${anyFail}`,
 		`crucible_synthetic_ui_overall_last_run_timestamp{layer="ui"} ${now}`,
-		`crucible_synthetic_ui_overall_check_count{layer="ui"} ${results.length}`
+		`crucible_synthetic_ui_overall_check_count{layer="ui"} ${results.length}`,
+		`crucible_synthetic_ui_overall_expected_check_count{layer="ui"} ${expectedCheckCount}`,
+		`crucible_synthetic_ui_overall_coverage_ratio{layer="ui"} ${coverage.toFixed(6)}`
 	);
 	return lines.join('\n') + '\n';
 }
 
-export async function pushResults(results: CheckResult[]): Promise<void> {
+export function buildPushgatewayUrl(baseUrl: string, job: string): string {
+	return `${baseUrl.replace(/\/$/, '')}/metrics/job/${encodeURIComponent(job)}/layer/ui`;
+}
+
+export async function pushResults(
+	results: CheckResult[],
+	expectedCheckCount = results.length
+): Promise<void> {
 	if (PUSHGATEWAY_URL === 'skip') {
 		console.log('[pushgateway] PUSHGATEWAY_URL=skip — not pushing', results.length, 'results');
 		return;
 	}
-	if (results.length === 0) {
-		console.log('[pushgateway] no results to push');
-		return;
-	}
-	const body = buildExposition(results);
-	const url = `${PUSHGATEWAY_URL.replace(/\/$/, '')}/metrics/job/${encodeURIComponent(JOB)}/layer/ui`;
+	const body = buildExposition(results, expectedCheckCount);
+	const url = buildPushgatewayUrl(PUSHGATEWAY_URL, JOB);
 	try {
 		const res = await fetch(url, {
-			method: 'POST',
+			method: PUSHGATEWAY_REPLACEMENT_METHOD,
 			headers: { 'Content-Type': 'text/plain; version=0.0.4' },
 			body,
 			signal: AbortSignal.timeout(10_000)
