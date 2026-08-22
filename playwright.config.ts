@@ -1,5 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 import 'dotenv/config';
+import './tests/lib/config.ts';
 
 // Playwright config for the Crucible UI synthetic suite.
 //

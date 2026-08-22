@@ -12,6 +12,11 @@ services:
     pull_policy: always
     env_file:
       - /opt/synthetic-ui/secrets/env
+    environment:
+      # Production-safe defaults. Override only during an approved
+      # provisioning re-enable after the API and UI maintenance gates agree.
+      SYNTHETIC_LIFECYCLE_ENABLED: "${SYNTHETIC_LIFECYCLE_ENABLED:-false}"
+      SYNTHETIC_EXPECT_MAINTENANCE: "${SYNTHETIC_EXPECT_MAINTENANCE:-true}"
     volumes:
       - /opt/synthetic-ui/results:/app/test-results
       - /opt/synthetic-ui/report:/app/playwright-report

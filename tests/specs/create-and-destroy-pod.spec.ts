@@ -17,14 +17,18 @@
 //   - Click "Delete Pod" then "Confirm Delete"
 //   - Wait for landing back on /pods
 
+import { type Page, type TestInfo } from '@playwright/test';
 import { test, expect } from '../lib/fixtures.ts';
+import { syntheticConfig } from '../lib/config.ts';
+import { registerLifecycleCheck } from '../lib/lifecycle.ts';
 import { meta } from '../lib/synthetic.ts';
 
-const TEMPLATE = process.env.SYNTHETIC_TEMPLATE_NAME;
+const TEMPLATE = process.env.SYNTHETIC_TEMPLATE_NAME!;
 
-test.skip(!TEMPLATE, 'SYNTHETIC_TEMPLATE_NAME not configured');
-
-test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) => {
+const lifecycleCheck = async (
+	{ authedPage: page }: { authedPage: Page },
+	testInfo: TestInfo
+) => {
 	meta(testInfo, {
 		title: 'Create + destroy a synthetic-noop pod (full lifecycle)',
 		description: `Walks the multi-step /pods/new wizard with template "${TEMPLATE ?? '?'}", waits for active status, then destroys via the pod detail page. Deepest end-to-end UI check: exercises wizard state machine, provisioning worker, vCenter clone, NetBird onboarding, and destroy path. A failure usually means the wizard broke (selectors changed) or the worker is stalled — cross-check pod_lifecycle API synthetic and worker logs.`,
@@ -108,5 +112,9 @@ test('create_and_destroy_synthetic_pod', async ({ authedPage: page }, testInfo) 
 	await expect(page.getByRole('heading', { name: /Dashboard/i })).toBeVisible({
 		timeout: 60_000
 	});
-});
+};
 
+registerLifecycleCheck(
+	syntheticConfig.lifecycleEnabled,
+	() => test('create_and_destroy_synthetic_pod', lifecycleCheck)
+);

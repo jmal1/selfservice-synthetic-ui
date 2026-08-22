@@ -18,14 +18,17 @@ export { expect };
 const STORAGE_FILE = path.resolve('.auth', 'synthetic-state.json');
 
 export const test = base.extend<{ authedPage: Page }>({
-	authedPage: async ({ browser }, use) => {
+	authedPage: async ({ browser, baseURL }, use) => {
 		if (!fs.existsSync(STORAGE_FILE)) {
 			throw new Error(
 				`No authenticated state at ${STORAGE_FILE}. Run the auth.spec.ts spec first ` +
 					`(it runs as part of the default suite ordering).`
 			);
 		}
-		const context = await browser.newContext({ storageState: STORAGE_FILE });
+		const context = await browser.newContext({
+			storageState: STORAGE_FILE,
+			baseURL
+		});
 		const page = await context.newPage();
 		await use(page);
 		await context.close();
@@ -56,14 +59,17 @@ export function storageStatePath(): string {
 const ADMIN_STORAGE_FILE = path.resolve('.auth', 'synthetic-admin-state.json');
 
 export const adminTest = base.extend<{ authedAdminPage: Page }>({
-	authedAdminPage: async ({ browser }, use) => {
+	authedAdminPage: async ({ browser, baseURL }, use) => {
 		if (!fs.existsSync(ADMIN_STORAGE_FILE)) {
 			throw new Error(
 				`No admin/instructor auth state at ${ADMIN_STORAGE_FILE}. ` +
 					`Set SYNTHETIC_ADMIN_USERNAME + SYNTHETIC_ADMIN_PASSWORD and run 01-auth-admin.spec.ts first.`
 			);
 		}
-		const context = await browser.newContext({ storageState: ADMIN_STORAGE_FILE });
+		const context = await browser.newContext({
+			storageState: ADMIN_STORAGE_FILE,
+			baseURL
+		});
 		const page = await context.newPage();
 		await use(page);
 		await context.close();
