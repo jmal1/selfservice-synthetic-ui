@@ -1,28 +1,38 @@
-const FILTER_FLAGS = new Set([
+// Audited against `playwright test --help` in Playwright 1.60. These modes
+// select, repeat, reconfigure, or interactively control execution, so they
+// must never replace the production Pushgateway group.
+const NON_PUBLISHING_LONG_OPTIONS = [
+	'--browser',
+	'--config',
 	'--debug',
 	'--grep',
-	'-g',
 	'--grep-invert',
 	'--last-failed',
 	'--only-changed',
 	'--project',
 	'--repeat-each',
+	'--run-agents',
 	'--shard',
 	'--test-list',
 	'--test-list-invert',
 	'--ui',
 	'--ui-host',
-	'--ui-port'
-]);
-const VALUE_OPTIONS = new Set([
-	'--config',
-	'-c',
+	'--ui-port',
+	'--update-snapshots',
+	'--update-source-method'
+] as const;
+const NON_PUBLISHING_SHORT_OPTIONS = ['-c', '-g', '-u'] as const;
+
+// Value-taking options that are valid for a full production run. Split values
+// must be consumed so they are not mistaken for positional test filters.
+const FULL_RUN_VALUE_OPTIONS = new Set([
 	'--global-timeout',
 	'--max-failures',
 	'--output',
 	'--reporter',
 	'--retries',
 	'--timeout',
+	'--trace',
 	'--tsconfig',
 	'--workers',
 	'-j'
@@ -38,24 +48,31 @@ export function hasIntentionalTestSelection(
 ): boolean {
 	if (env.PWDEBUG !== undefined && env.PWDEBUG !== '') return true;
 
-	if (
-		argv.some(
-			(argument) =>
-				FILTER_FLAGS.has(argument) ||
-				[...FILTER_FLAGS].some(
-					(flag) => flag.startsWith('--') && argument.startsWith(`${flag}=`)
-				)
-		)
-	) {
-		return true;
+	for (const argument of argv) {
+		if (
+			NON_PUBLISHING_LONG_OPTIONS.some(
+				(option) => argument === option || argument.startsWith(`${option}=`)
+			) ||
+			NON_PUBLISHING_SHORT_OPTIONS.some(
+				(option) => argument === option || argument.startsWith(option)
+			)
+		) {
+			return true;
+		}
 	}
 
 	const testCommand = argv.lastIndexOf('test');
 	const testArguments = testCommand >= 0 ? argv.slice(testCommand + 1) : argv.slice(2);
 	for (let index = 0; index < testArguments.length; index += 1) {
 		const argument = testArguments[index];
-		if (VALUE_OPTIONS.has(argument)) {
+		if (FULL_RUN_VALUE_OPTIONS.has(argument)) {
 			index += 1;
+			continue;
+		}
+		if (
+			argument.startsWith('-j') &&
+			argument !== '-j'
+		) {
 			continue;
 		}
 		if (!argument.startsWith('-')) return true;
