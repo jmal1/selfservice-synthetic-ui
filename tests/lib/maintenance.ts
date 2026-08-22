@@ -46,10 +46,11 @@ interface PodSummary {
 
 export function parsePodSummaries(body: unknown): PodSummary[] {
 	const candidates =
-		Array.isArray(body)
+		body === null
+			? []
+			: Array.isArray(body)
 			? body
 			: typeof body === 'object' &&
-					body !== null &&
 					'pods' in body &&
 					Array.isArray(body.pods)
 				? body.pods
