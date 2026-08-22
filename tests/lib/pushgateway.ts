@@ -36,7 +36,8 @@ function escapeLabel(v: string): string {
 export function buildExposition(
 	results: CheckResult[],
 	expectedCheckCount = results.length,
-	now = Math.floor(Date.now() / 1000)
+	now = Math.floor(Date.now() / 1000),
+	forceOverallFailure = false
 ): string {
 	const lines: string[] = [
 		'# HELP crucible_synthetic_ui_check_success 1 if the check passed, 0 otherwise',
@@ -68,7 +69,11 @@ export function buildExposition(
 	}
 	const coverage = expectedCheckCount === 0 ? 1 : results.length / expectedCheckCount;
 	const anyFail =
-		results.some((r) => r.success === 0) || results.length !== expectedCheckCount ? 0 : 1;
+		forceOverallFailure ||
+		results.some((r) => r.success === 0) ||
+		results.length !== expectedCheckCount
+			? 0
+			: 1;
 	lines.push(
 		`crucible_synthetic_ui_overall_success{layer="ui"} ${anyFail}`,
 		`crucible_synthetic_ui_overall_last_run_timestamp{layer="ui"} ${now}`,
@@ -85,13 +90,19 @@ export function buildPushgatewayUrl(baseUrl: string, job: string): string {
 
 export async function pushResults(
 	results: CheckResult[],
-	expectedCheckCount = results.length
+	expectedCheckCount = results.length,
+	forceOverallFailure = false
 ): Promise<void> {
 	if (PUSHGATEWAY_URL === 'skip') {
 		console.log('[pushgateway] PUSHGATEWAY_URL=skip — not pushing', results.length, 'results');
 		return;
 	}
-	const body = buildExposition(results, expectedCheckCount);
+	const body = buildExposition(
+		results,
+		expectedCheckCount,
+		Math.floor(Date.now() / 1000),
+		forceOverallFailure
+	);
 	const url = buildPushgatewayUrl(PUSHGATEWAY_URL, JOB);
 	try {
 		const res = await fetch(url, {

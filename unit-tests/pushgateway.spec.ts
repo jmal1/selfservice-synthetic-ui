@@ -47,6 +47,14 @@ test('missing expected result makes aggregate coverage and success fail', () => 
 	expect(body).toContain('crucible_synthetic_ui_overall_success{layer="ui"} 0');
 });
 
+test('forced aggregate failure overrides a complete green-looking result map', () => {
+	const body = buildExposition([safeCheck, lifecycleCheck], 2, 126, true);
+	expect(body).toContain('crucible_synthetic_ui_overall_check_count{layer="ui"} 2');
+	expect(body).toContain('crucible_synthetic_ui_overall_coverage_ratio{layer="ui"} 1.000000');
+	expect(body).toContain('crucible_synthetic_ui_overall_success{layer="ui"} 0');
+	expect(body).toContain('crucible_synthetic_ui_check_success{check="safe_navigation",layer="ui"} 1');
+});
+
 test('expected count excludes configured skips but includes runnable failures', () => {
 	expect(
 		countExpectedChecks([

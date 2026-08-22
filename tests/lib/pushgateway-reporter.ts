@@ -23,6 +23,7 @@ import {
 import {
 	hasIntentionalTestSelection,
 	isListOnlyRun,
+	mustForceOverallFailure,
 	shouldPublishReplacement
 } from './reporter-policy.ts';
 
@@ -66,7 +67,7 @@ class PushgatewayReporter implements Reporter {
 		});
 	}
 
-	async onEnd(_result: FullResult): Promise<void> {
+	async onEnd(result: FullResult): Promise<void> {
 		if (
 			!shouldPublishReplacement({
 				intentionallyFiltered: this.intentionallyFiltered,
@@ -87,7 +88,16 @@ class PushgatewayReporter implements Reporter {
 				`[pushgateway] full suite discovered ${this.discoveredCheckCount}/${this.expectedCheckCount} expected checks; publishing failed coverage to replace stale metrics`
 			);
 		}
-		await pushResults([...this.results.values()], this.expectedCheckCount);
+		const forceOverallFailure = mustForceOverallFailure(
+			result.status,
+			this.discoveredCheckCount,
+			this.expectedCheckCount
+		);
+		await pushResults(
+			[...this.results.values()],
+			this.expectedCheckCount,
+			forceOverallFailure
+		);
 	}
 }
 

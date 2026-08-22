@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
 	hasIntentionalTestSelection,
 	isListOnlyRun,
+	mustForceOverallFailure,
 	shouldPublishReplacement
 } from '../tests/lib/reporter-policy.ts';
 import { buildExposition } from '../tests/lib/pushgateway.ts';
@@ -31,6 +32,12 @@ test('detects explicit CLI test selection without treating normal options as fil
 		hasIntentionalTestSelection(['node', 'playwright', 'test', '--grep-invert=slow'])
 	).toBe(true);
 	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--repeat-each', '2'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--repeat-each=2'])
+	).toBe(true);
+	expect(
 		hasIntentionalTestSelection(['node', 'playwright', 'test', '--test-list', 'checks.txt'])
 	).toBe(true);
 	expect(
@@ -54,6 +61,22 @@ test('detects explicit CLI test selection without treating normal options as fil
 		])
 	).toBe(true);
 	expect(hasIntentionalTestSelection(['node', 'playwright', 'test', '--ui'])).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--ui-host', '127.0.0.1'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--ui-host=127.0.0.1'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--ui-port', '9323'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--ui-port=9323'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '-x', 'tests/specs/healthz.spec.ts'])
+	).toBe(true);
+	expect(hasIntentionalTestSelection(['node', 'playwright', 'test', '-x'])).toBe(false);
 	expect(isListOnlyRun(['node', 'playwright', 'test', '--list'])).toBe(true);
 });
 
@@ -83,6 +106,17 @@ test('incomplete full execution replaces stale green metrics with failed coverag
 		'crucible_synthetic_ui_overall_coverage_ratio{layer="ui"} 0.052632'
 	);
 	expect(replacement).toContain('crucible_synthetic_ui_overall_success{layer="ui"} 0');
+});
+
+test('non-passed full result forces failure even with complete discovery', () => {
+	expect(mustForceOverallFailure('failed', 19, 19)).toBe(true);
+	expect(mustForceOverallFailure('timedout', 19, 19)).toBe(true);
+	expect(mustForceOverallFailure('passed', 19, 19)).toBe(false);
+});
+
+test('discovery mismatch forces failure even when Playwright reports passed', () => {
+	expect(mustForceOverallFailure('passed', 18, 19)).toBe(true);
+	expect(mustForceOverallFailure('passed', 20, 19)).toBe(true);
 });
 
 test('list-only discovery is the only unfiltered zero-execution mode that does not replace metrics', () => {

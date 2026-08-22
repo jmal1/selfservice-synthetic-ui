@@ -5,19 +5,20 @@ const FILTER_FLAGS = new Set([
 	'--last-failed',
 	'--only-changed',
 	'--project',
+	'--repeat-each',
 	'--shard',
 	'--test-list',
 	'--test-list-invert',
-	'--ui'
+	'--ui',
+	'--ui-host',
+	'--ui-port'
 ]);
 const VALUE_OPTIONS = new Set([
 	'--config',
 	'-c',
 	'--global-timeout',
 	'--max-failures',
-	'-x',
 	'--output',
-	'--repeat-each',
 	'--reporter',
 	'--retries',
 	'--timeout',
@@ -63,4 +64,15 @@ export interface ReplacementPolicy {
 
 export function shouldPublishReplacement(policy: ReplacementPolicy): boolean {
 	return !policy.listOnly && !policy.intentionallyFiltered;
+}
+
+export function mustForceOverallFailure(
+	fullResultStatus: string,
+	discoveredCheckCount: number,
+	expectedFullSuiteCheckCount: number
+): boolean {
+	return (
+		fullResultStatus !== 'passed' ||
+		discoveredCheckCount !== expectedFullSuiteCheckCount
+	);
 }
