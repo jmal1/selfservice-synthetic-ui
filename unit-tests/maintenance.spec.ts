@@ -23,14 +23,20 @@ test('maintenance control rejects actionable provisioning controls', () => {
 	).toBe(false);
 });
 
-test('pod response parsing supports current API envelopes without silent fallback', () => {
+test('pod response parsing supports current API envelopes and a null empty list', () => {
 	expect(parsePodSummaries([{ id: 'pod-1', status: 'active' }])).toEqual([
 		{ id: 'pod-1', status: 'active' }
 	]);
 	expect(parsePodSummaries({ pods: [{ id: 'pod-2' }] })).toEqual([
 		{ id: 'pod-2', status: undefined }
 	]);
-	expect(() => parsePodSummaries({ data: [] })).toThrow(
-		'GET /api/v1/pods returned neither an array nor an object with a pods array'
-	);
+	expect(parsePodSummaries(null)).toEqual([]);
+});
+
+test('pod response parsing rejects malformed response shapes', () => {
+	for (const body of [{ data: [] }, { pods: null }, {}, 'not-json-list']) {
+		expect(() => parsePodSummaries(body)).toThrow(
+			'GET /api/v1/pods returned neither an array nor an object with a pods array'
+		);
+	}
 });
