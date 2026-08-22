@@ -5,7 +5,10 @@ const FILTER_FLAGS = new Set([
 	'--last-failed',
 	'--only-changed',
 	'--project',
-	'--shard'
+	'--shard',
+	'--test-list',
+	'--test-list-invert',
+	'--ui'
 ]);
 const VALUE_OPTIONS = new Set([
 	'--config',

@@ -30,6 +30,30 @@ test('detects explicit CLI test selection without treating normal options as fil
 	expect(
 		hasIntentionalTestSelection(['node', 'playwright', 'test', '--grep-invert=slow'])
 	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--test-list', 'checks.txt'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--test-list=checks.txt'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection([
+			'node',
+			'playwright',
+			'test',
+			'--test-list-invert',
+			'excluded.txt'
+		])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection([
+			'node',
+			'playwright',
+			'test',
+			'--test-list-invert=excluded.txt'
+		])
+	).toBe(true);
+	expect(hasIntentionalTestSelection(['node', 'playwright', 'test', '--ui'])).toBe(true);
 	expect(isListOnlyRun(['node', 'playwright', 'test', '--list'])).toBe(true);
 });
 
