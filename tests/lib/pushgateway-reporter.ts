@@ -13,7 +13,6 @@ import type {
 	Suite
 } from '@playwright/test/reporter';
 import {
-	countExpectedChecks,
 	pushResults,
 	type CheckResult
 } from './pushgateway.ts';
@@ -21,26 +20,29 @@ import {
 	expectedFullSuiteCheckCount,
 	syntheticConfig
 } from './config.ts';
+import {
+	hasIntentionalTestSelection,
+	isListOnlyRun,
+	shouldPublishReplacement
+} from './reporter-policy.ts';
 
 class PushgatewayReporter implements Reporter {
 	private results = new Map<string, CheckResult>();
 	private expectedCheckCount = 0;
-	private executionStarted = false;
-	private fullSuiteSelected = false;
+	private discoveredCheckCount = 0;
+	private intentionallyFiltered = false;
+	private listOnly = false;
 
 	onBegin(_config: FullConfig, suite: Suite): void {
-		this.expectedCheckCount = countExpectedChecks(suite.allTests());
-		this.fullSuiteSelected =
-			this.expectedCheckCount ===
-			expectedFullSuiteCheckCount(process.env, syntheticConfig);
-	}
-
-	onTestBegin(): void {
-		this.executionStarted = true;
+		this.discoveredCheckCount = suite
+			.allTests()
+			.filter((test) => test.expectedStatus !== 'skipped').length;
+		this.expectedCheckCount = expectedFullSuiteCheckCount(process.env, syntheticConfig);
+		this.intentionallyFiltered = hasIntentionalTestSelection(process.argv);
+		this.listOnly = isListOnlyRun(process.argv);
 	}
 
 	onTestEnd(test: TestCase, result: TestResult): void {
-		this.executionStarted = true;
 		// Only record the final attempt (skip retries' intermediate fails)
 		if (result.retry < (test.retries ?? 0) && result.status === 'failed') {
 			return;
@@ -65,15 +67,25 @@ class PushgatewayReporter implements Reporter {
 	}
 
 	async onEnd(_result: FullResult): Promise<void> {
-		if (!this.executionStarted) {
+		if (
+			!shouldPublishReplacement({
+				intentionallyFiltered: this.intentionallyFiltered,
+				listOnly: this.listOnly
+			})
+		) {
+			if (this.intentionallyFiltered) {
+				console.log(
+					'[pushgateway] intentional partial/filtered suite detected; refusing to replace the full metric group'
+				);
+				return;
+			}
 			console.log('[pushgateway] no test execution events; skipping discovery-only push');
 			return;
 		}
-		if (!this.fullSuiteSelected) {
-			console.log(
-				'[pushgateway] partial/filtered suite detected; refusing to replace the full metric group'
+		if (this.discoveredCheckCount !== this.expectedCheckCount) {
+			console.warn(
+				`[pushgateway] full suite discovered ${this.discoveredCheckCount}/${this.expectedCheckCount} expected checks; publishing failed coverage to replace stale metrics`
 			);
-			return;
 		}
 		await pushResults([...this.results.values()], this.expectedCheckCount);
 	}

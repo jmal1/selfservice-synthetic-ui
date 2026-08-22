@@ -36,6 +36,12 @@ export function loadSyntheticConfig(
 				'refusing to register destructive checks while maintenance is expected'
 		);
 	}
+	if (lifecycleEnabled && !env.SYNTHETIC_TEMPLATE_NAME?.trim()) {
+		throw new Error(
+			'SYNTHETIC_TEMPLATE_NAME must be set when SYNTHETIC_LIFECYCLE_ENABLED=true; ' +
+				'refusing to report healthy coverage without running the lifecycle check'
+		);
+	}
 
 	return { lifecycleEnabled, expectMaintenance };
 }
@@ -49,7 +55,7 @@ export function expectedFullSuiteCheckCount(
 	let count = 14;
 	if (env.SYNTHETIC_ADMIN_USERNAME) count += 3;
 	if (env.SYNTHETIC_ADMIN_USERNAME && env.SYNTHETIC_ADMIN_PASSWORD) count += 1;
-	if (config.lifecycleEnabled && env.SYNTHETIC_TEMPLATE_NAME) count += 1;
+	if (config.lifecycleEnabled) count += 1;
 	if (config.expectMaintenance) count += 1;
 	return count;
 }

@@ -23,7 +23,7 @@ import { syntheticConfig } from '../lib/config.ts';
 import { registerLifecycleCheck } from '../lib/lifecycle.ts';
 import { meta } from '../lib/synthetic.ts';
 
-const TEMPLATE = process.env.SYNTHETIC_TEMPLATE_NAME;
+const TEMPLATE = process.env.SYNTHETIC_TEMPLATE_NAME!;
 
 const lifecycleCheck = async (
 	{ authedPage: page }: { authedPage: Page },
@@ -113,10 +113,6 @@ const lifecycleCheck = async (
 		timeout: 60_000
 	});
 };
-
-if (syntheticConfig.lifecycleEnabled) {
-	test.skip(!TEMPLATE, 'SYNTHETIC_TEMPLATE_NAME not configured');
-}
 
 registerLifecycleCheck(
 	syntheticConfig.lifecycleEnabled,

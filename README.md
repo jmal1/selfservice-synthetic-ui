@@ -112,6 +112,7 @@ SYNTHETIC_PASSWORD=<from-vault>
 SYNTHETIC_BASE_URL=https://crucible.jmal.io
 SYNTHETIC_LIFECYCLE_ENABLED=true
 SYNTHETIC_EXPECT_MAINTENANCE=false
+SYNTHETIC_TEMPLATE_NAME=synthetic-noop
 PUSHGATEWAY_URL=skip
 EOF
 
@@ -149,16 +150,20 @@ Pushgateway updates use `PUT` to replace the complete
 `job=crucible_synthetic_ui,layer=ui` group. A lifecycle-disabled run therefore
 removes the prior `create_and_destroy_synthetic_pod` series instead of leaving
 it stale or reporting it as passed. Unexpected skips reduce coverage and force
-`overall_success` to `0`. Filtered or targeted Playwright runs never publish,
-because a partial `PUT` would erase unselected checks from the production
-group.
+`overall_success` to `0`. Intentionally filtered or targeted Playwright runs
+never publish, because a partial `PUT` would erase unselected checks from the
+production group. An unfiltered production run that discovers fewer checks
+than its canonical configuration still replaces the group with reduced
+coverage and `overall_success=0`, so stale green metrics cannot survive.
 
 ### Provisioning lifecycle gate
 
 `SYNTHETIC_LIFECYCLE_ENABLED` accepts only `true` or `false`; invalid and empty
 values fail suite configuration. It defaults to `true` for backward
 compatibility in local/generic environments. The production compose and
-systemd examples pin it to `false`.
+systemd examples pin it to `false`. When enabled, `SYNTHETIC_TEMPLATE_NAME`
+is required at startup; the suite refuses to run rather than silently skip its
+destructive coverage.
 
 `SYNTHETIC_EXPECT_MAINTENANCE` also accepts only `true` or `false` and defaults
 to `false`. When true, the non-destructive maintenance contract check is

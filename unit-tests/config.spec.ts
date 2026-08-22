@@ -30,8 +30,8 @@ test('invalid boolean env fails clearly', () => {
 	);
 });
 
-test('lifecycle defaults enabled for backward compatibility', () => {
-	expect(loadSyntheticConfig({})).toEqual({
+test('lifecycle defaults enabled when its template is configured', () => {
+	expect(loadSyntheticConfig({ SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop' })).toEqual({
 		lifecycleEnabled: true,
 		expectMaintenance: false
 	});
@@ -41,9 +41,21 @@ test('maintenance expectation requires lifecycle checks disabled', () => {
 	expect(() =>
 		loadSyntheticConfig({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'true',
-			SYNTHETIC_EXPECT_MAINTENANCE: 'true'
+			SYNTHETIC_EXPECT_MAINTENANCE: 'true',
+			SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop'
 		})
 	).toThrow('SYNTHETIC_EXPECT_MAINTENANCE=true requires SYNTHETIC_LIFECYCLE_ENABLED=false');
+});
+
+test('enabled lifecycle fails configuration when its template is missing', () => {
+	expect(() =>
+		loadSyntheticConfig({
+			SYNTHETIC_LIFECYCLE_ENABLED: 'true',
+			SYNTHETIC_EXPECT_MAINTENANCE: 'false'
+		})
+	).toThrow(
+		'SYNTHETIC_TEMPLATE_NAME must be set when SYNTHETIC_LIFECYCLE_ENABLED=true'
+	);
 });
 
 test('full-suite expected count follows lifecycle, maintenance, and identity state', () => {
