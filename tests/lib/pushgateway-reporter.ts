@@ -39,7 +39,7 @@ class PushgatewayReporter implements Reporter {
 			.allTests()
 			.filter((test) => test.expectedStatus !== 'skipped').length;
 		this.expectedCheckCount = expectedFullSuiteCheckCount(process.env, syntheticConfig);
-		this.intentionallyFiltered = hasIntentionalTestSelection(process.argv);
+		this.intentionallyFiltered = hasIntentionalTestSelection(process.argv, process.env);
 		this.listOnly = isListOnlyRun(process.argv);
 	}
 

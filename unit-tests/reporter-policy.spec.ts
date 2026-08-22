@@ -37,6 +37,19 @@ test('detects explicit CLI test selection without treating normal options as fil
 	expect(
 		hasIntentionalTestSelection(['node', 'playwright', 'test', '--repeat-each=2'])
 	).toBe(true);
+	expect(hasIntentionalTestSelection(['node', 'playwright', 'test', '--debug'])).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test', '--debug=console'])
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test'], { PWDEBUG: '1' })
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test'], { PWDEBUG: 'console' })
+	).toBe(true);
+	expect(
+		hasIntentionalTestSelection(['node', 'playwright', 'test'], { PWDEBUG: '' })
+	).toBe(false);
 	expect(
 		hasIntentionalTestSelection(['node', 'playwright', 'test', '--test-list', 'checks.txt'])
 	).toBe(true);

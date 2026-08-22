@@ -1,4 +1,5 @@
 const FILTER_FLAGS = new Set([
+	'--debug',
 	'--grep',
 	'-g',
 	'--grep-invert',
@@ -27,7 +28,16 @@ const VALUE_OPTIONS = new Set([
 	'-j'
 ]);
 
-export function hasIntentionalTestSelection(argv: readonly string[]): boolean {
+export interface ReporterEnvironment {
+	PWDEBUG?: string;
+}
+
+export function hasIntentionalTestSelection(
+	argv: readonly string[],
+	env: ReporterEnvironment = {}
+): boolean {
+	if (env.PWDEBUG !== undefined && env.PWDEBUG !== '') return true;
+
 	if (
 		argv.some(
 			(argument) =>
