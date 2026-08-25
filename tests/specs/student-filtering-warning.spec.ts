@@ -11,7 +11,7 @@ test('student_internet_filtering_warning_visible', async ({ authedPage: page }, 
 			'Student-role synthetic user opens the pod creation route through Caddy, Authentik, and the UI, then verifies the temporary unrestricted-Internet warning is exposed as an accessible alert.',
 		severity: 'warning',
 		runbook:
-			'https://github.com/jmal1/Homelab/blob/main/docs/Student-Content-Filtering.md'
+			'https://github.com/jmal1/Homelab/blob/main/future/Student-Content-Filtering.md'
 	});
 
 	const response = await page.goto('/pods/new', { waitUntil: 'domcontentloaded' });
