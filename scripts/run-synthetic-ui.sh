@@ -17,16 +17,16 @@ validate_keep_runs() {
   fi
 }
 
-validate_report_root() {
+validate_bind_source() {
   local root="$1"
-  # The report root is bind-mounted into the container as /app/playwright-report.
+  local label="$2"
   # Docker would create a missing bind source as root, so reject it first.
-  if [[ ! -d "$root" ]]; then
-    echo "[synthetic-ui] report root '$root' does not exist; create it with: sudo install -d -m 0755 '$root' && sudo chown 1001:1001 '$root'" >&2
+  if [[ -L "$root" ]]; then
+    echo "[synthetic-ui] $label '$root' must not be a symlink" >&2
     return 1
   fi
-  if [[ -L "$root" ]]; then
-    echo "[synthetic-ui] report root '$root' must not be a symlink" >&2
+  if [[ ! -d "$root" ]]; then
+    echo "[synthetic-ui] $label '$root' does not exist; create it with: sudo install -d -m 0755 -o 1001 -g 1001 '$root'" >&2
     return 1
   fi
 }
@@ -40,13 +40,15 @@ run_report_storage_command() {
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 compose_file="$repo_root/deploy/docker-compose.yml"
-report_root="${SYNTHETIC_REPORT_ROOT:-/opt/synthetic-ui/report}"
+readonly report_root="/opt/synthetic-ui/report"
+readonly results_root="/opt/synthetic-ui/results"
 keep_runs_raw="${SYNTHETIC_REPORT_KEEP_RUNS:-3}"
 image="${SYNTHETIC_UI_IMAGE:-}"
 
 validate_image_reference "$image"
 validate_keep_runs "$keep_runs_raw"
-validate_report_root "$report_root"
+validate_bind_source "$report_root" "report root"
+validate_bind_source "$results_root" "results root"
 if ! run_report_storage_command preflight; then
   echo "[synthetic-ui] report storage preflight failed for container UID 1001 (pwuser)" >&2
   exit 1

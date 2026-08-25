@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { materializeSandboxedWrapper } from './wrapper-test-helpers.ts';
 
 async function loadGuardrails() {
 	// @ts-expect-error Runtime module has no TypeScript declaration.
@@ -115,10 +116,12 @@ test('report storage preflight creates runs and proves report/results writes', a
 test('bash host wrapper delegates retention and preserves the compose exit code', () => {
 	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-wrapper-'));
 	const reportRoot = join(root, 'report');
+	const resultsRoot = join(root, 'results');
 	const runsRoot = join(reportRoot, 'runs');
 	const dockerDir = join(root, 'bin');
 	const logFile = join(root, 'docker.log');
 	mkdirSync(runsRoot, { recursive: true });
+	mkdirSync(resultsRoot, { recursive: true });
 	mkdirSync(dockerDir, { recursive: true });
 
 	createRunDir(runsRoot, '20260825T140000Z-1001', 30_000);
@@ -143,7 +146,7 @@ test('bash host wrapper delegates retention and preserves the compose exit code'
 	);
 	chmodSync(fakeDocker, 0o755);
 
-	const wrapper = join(process.cwd(), 'scripts', 'run-synthetic-ui.sh').replace(/\\/g, '/');
+	const wrapper = materializeSandboxedWrapper(root, reportRoot, resultsRoot);
 	const result = spawnSync('bash', [wrapper], {
 		cwd: process.cwd(),
 		encoding: 'utf8',
@@ -152,7 +155,6 @@ test('bash host wrapper delegates retention and preserves the compose exit code'
 			PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
 			FAKE_DOCKER_EXIT: '7',
 			FAKE_DOCKER_LOG: logFile,
-			SYNTHETIC_REPORT_ROOT: reportRoot,
 			SYNTHETIC_REPORT_KEEP_RUNS: '2',
 			SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
 		}

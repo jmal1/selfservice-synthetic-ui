@@ -13,7 +13,6 @@ WorkingDirectory=/opt/synthetic-ui/app
 Environment=SYNTHETIC_LIFECYCLE_ENABLED=false
 Environment=SYNTHETIC_EXPECT_MAINTENANCE=false
 # The host wrapper requests container-UID report retention after every run.
-Environment=SYNTHETIC_REPORT_ROOT=/opt/synthetic-ui/report
 Environment=SYNTHETIC_REPORT_KEEP_RUNS=3
 # Non-secret, exact SHA-tagged image selection. Fail closed if the pin is absent.
 EnvironmentFile=/opt/synthetic-ui/image.env

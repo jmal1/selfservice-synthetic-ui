@@ -26,10 +26,12 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	symlinkSync,
 	writeFileSync
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { materializeSandboxedWrapper } from './wrapper-test-helpers.ts';
 
 function loadReadme(): string {
 	return readFileSync(join(process.cwd(), 'README.md'), 'utf8');
@@ -417,6 +419,8 @@ test('bash host wrapper rejects a missing report root before invoking Docker', (
 	mkdirSync(dockerDir, { recursive: true });
 	// Intentionally do NOT create the report directory.
 	const reportRoot = join(root, 'report-missing');
+	const resultsRoot = join(root, 'results');
+	mkdirSync(resultsRoot, { recursive: true });
 
 	const fakeDocker = join(dockerDir, 'docker');
 	writeFileSync(
@@ -425,7 +429,7 @@ test('bash host wrapper rejects a missing report root before invoking Docker', (
 	);
 	chmodSync(fakeDocker, 0o755);
 
-	const wrapper = join(process.cwd(), 'scripts', 'run-synthetic-ui.sh').replace(/\\/g, '/');
+	const wrapper = materializeSandboxedWrapper(root, reportRoot, resultsRoot);
 	const result = spawnSync('bash', [wrapper], {
 		cwd: process.cwd(),
 		encoding: 'utf8',
@@ -433,7 +437,6 @@ test('bash host wrapper rejects a missing report root before invoking Docker', (
 			...process.env,
 			PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
 			FAKE_DOCKER_LOG: logFile,
-			SYNTHETIC_REPORT_ROOT: reportRoot,
 			SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
 		}
 	});
@@ -451,8 +454,10 @@ test('bash host wrapper delegates writability checks instead of testing as the h
 	const dockerDir = join(root, 'bin');
 	const logFile = join(root, 'docker.log');
 	const reportRoot = join(root, 'report');
+	const resultsRoot = join(root, 'results');
 	mkdirSync(dockerDir, { recursive: true });
 	mkdirSync(reportRoot, { recursive: true });
+	mkdirSync(resultsRoot, { recursive: true });
 	// The systemd host UID cannot write a correct UID 1001-owned 0755 root.
 	chmodSync(reportRoot, 0o555);
 
@@ -463,7 +468,7 @@ test('bash host wrapper delegates writability checks instead of testing as the h
 	);
 	chmodSync(fakeDocker, 0o755);
 
-	const wrapper = join(process.cwd(), 'scripts', 'run-synthetic-ui.sh').replace(/\\/g, '/');
+	const wrapper = materializeSandboxedWrapper(root, reportRoot, resultsRoot);
 	const result = spawnSync('bash', [wrapper], {
 		cwd: process.cwd(),
 		encoding: 'utf8',
@@ -471,7 +476,6 @@ test('bash host wrapper delegates writability checks instead of testing as the h
 			...process.env,
 			PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
 			FAKE_DOCKER_LOG: logFile,
-			SYNTHETIC_REPORT_ROOT: reportRoot,
 			SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
 		}
 	});
@@ -485,4 +489,78 @@ test('bash host wrapper delegates writability checks instead of testing as the h
 	expect(dockerCalls[0]).toContain('deployment-guardrails.mjs preflight');
 	expect(dockerCalls[1]).toContain('run --rm monitor');
 	expect(dockerCalls[2]).toContain('deployment-guardrails.mjs prune 3');
+});
+
+test('bash host wrapper rejects a missing results root before invoking Docker', () => {
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-no-results-'));
+	const dockerDir = join(root, 'bin');
+	const logFile = join(root, 'docker.log');
+	const reportRoot = join(root, 'report');
+	const resultsRoot = join(root, 'results-missing');
+	mkdirSync(dockerDir, { recursive: true });
+	mkdirSync(reportRoot, { recursive: true });
+
+	const fakeDocker = join(dockerDir, 'docker');
+	writeFileSync(fakeDocker, '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"\n');
+	chmodSync(fakeDocker, 0o755);
+
+	const result = spawnSync(
+		'bash',
+		[materializeSandboxedWrapper(root, reportRoot, resultsRoot)],
+		{
+			cwd: process.cwd(),
+			encoding: 'utf8',
+			env: {
+				...process.env,
+				PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
+				FAKE_DOCKER_LOG: logFile,
+				SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
+			}
+		}
+	);
+
+	expect(result.status).not.toBe(0);
+	expect(result.stderr).toContain(`results root '${resultsRoot.replace(/\\/g, '/')}' does not exist`);
+	expect(existsSync(logFile), 'Docker must not run before results-root validation').toBe(false);
+});
+
+test('bash host wrapper rejects a results symlink before Docker without touching its target', () => {
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-results-link-'));
+	const dockerDir = join(root, 'bin');
+	const logFile = join(root, 'docker.log');
+	const reportRoot = join(root, 'report');
+	const resultsRoot = join(root, 'results-link');
+	const targetRoot = join(root, 'outside-results');
+	const sentinel = join(targetRoot, 'sentinel.txt');
+	mkdirSync(dockerDir, { recursive: true });
+	mkdirSync(reportRoot, { recursive: true });
+	mkdirSync(targetRoot, { recursive: true });
+	writeFileSync(sentinel, 'keep');
+	symlinkSync(targetRoot, resultsRoot, 'junction');
+
+	const fakeDocker = join(dockerDir, 'docker');
+	writeFileSync(fakeDocker, '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"\n');
+	chmodSync(fakeDocker, 0o755);
+
+	const result = spawnSync(
+		'bash',
+		[materializeSandboxedWrapper(root, reportRoot, resultsRoot)],
+		{
+			cwd: process.cwd(),
+			encoding: 'utf8',
+			env: {
+				...process.env,
+				PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
+				FAKE_DOCKER_LOG: logFile,
+				SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
+			}
+		}
+	);
+
+	expect(result.status).not.toBe(0);
+	expect(result.stderr).toContain(
+		`results root '${resultsRoot.replace(/\\/g, '/')}' must not be a symlink`
+	);
+	expect(existsSync(logFile), 'Docker must not run before results-symlink validation').toBe(false);
+	expect(readFileSync(sentinel, 'utf8')).toBe('keep');
 });

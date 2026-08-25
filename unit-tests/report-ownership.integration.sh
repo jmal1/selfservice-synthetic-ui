@@ -12,8 +12,8 @@ compose_file="$fixture/deploy/docker-compose.yml"
 project_name="synthetic-ui-ownership-$$"
 
 cleanup() {
-  SYNTHETIC_REPORT_ROOT="$report_root" \
-    SYNTHETIC_RESULTS_ROOT="$results_root" \
+  TEST_REPORT_ROOT="$report_root" \
+    TEST_RESULTS_ROOT="$results_root" \
     REPORT_MANAGER_SOURCE="$fixture/scripts/deployment-guardrails.mjs" \
     COMPOSE_PROJECT_NAME="$project_name" \
     docker compose -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
@@ -22,7 +22,10 @@ cleanup() {
 trap cleanup EXIT
 
 install -d -m 0755 "$fixture/scripts" "$fixture/deploy" "$host_home"
-cp "$repo_root/scripts/run-synthetic-ui.sh" "$fixture/scripts/"
+sed \
+  -e "s|^readonly report_root=\"/opt/synthetic-ui/report\"$|readonly report_root=\"$report_root\"|" \
+  -e "s|^readonly results_root=\"/opt/synthetic-ui/results\"$|readonly results_root=\"$results_root\"|" \
+  "$repo_root/scripts/run-synthetic-ui.sh" >"$fixture/scripts/run-synthetic-ui.sh"
 cp "$repo_root/scripts/deployment-guardrails.mjs" "$fixture/scripts/"
 chmod 0755 "$fixture/scripts/run-synthetic-ui.sh"
 
@@ -36,8 +39,8 @@ services:
       PLAYWRIGHT_REPORT_RUN_ID: "${PLAYWRIGHT_REPORT_RUN_ID:-missing}"
       TEST_MONITOR_EXIT: "${TEST_MONITOR_EXIT:-0}"
     volumes:
-      - "${SYNTHETIC_REPORT_ROOT:?}:/app/playwright-report"
-      - "${SYNTHETIC_RESULTS_ROOT:?}:/app/test-results"
+      - "${TEST_REPORT_ROOT:?}:/app/playwright-report"
+      - "${TEST_RESULTS_ROOT:?}:/app/test-results"
       - "${REPORT_MANAGER_SOURCE:?}:/app/scripts/deployment-guardrails.mjs:ro"
     entrypoint: ["node"]
     command:
@@ -64,8 +67,8 @@ run_as_host() {
     HOME="$host_home" \
     COMPOSE_PROJECT_NAME="$project_name" \
     REPORT_MANAGER_SOURCE="$fixture/scripts/deployment-guardrails.mjs" \
-    SYNTHETIC_REPORT_ROOT="$report_root" \
-    SYNTHETIC_RESULTS_ROOT="$results_root" \
+    TEST_REPORT_ROOT="$report_root" \
+    TEST_RESULTS_ROOT="$results_root" \
     SYNTHETIC_REPORT_KEEP_RUNS=3 \
     SYNTHETIC_UI_IMAGE="$image" \
     TEST_MONITOR_EXIT="${TEST_MONITOR_EXIT:-0}" \

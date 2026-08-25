@@ -97,9 +97,51 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 	expect(
 		expectedFullSuiteCheckCount({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
+			SYNTHETIC_EXPECT_MAINTENANCE: 'false',
+			SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop',
+			SYNTHETIC_ADMIN_USERNAME: 'admin',
+			SYNTHETIC_ADMIN_PASSWORD: 'secret'
+		})
+	).toBe(20);
+	expect(
+		expectedFullSuiteCheckCount({
+			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
 			SYNTHETIC_EXPECT_MAINTENANCE: 'false'
 		})
 	).toBe(16);
+});
+
+test('README configured check-count table matches computed production configurations', () => {
+	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+	const documentedRows = [
+		...readme.matchAll(/^\| `(true|false)`\s+\| `(true|false)`\s+\| (\d+)\s+\|$/gm)
+	].map((match) => ({
+		lifecycle: match[1],
+		maintenance: match[2],
+		count: Number(match[3])
+	}));
+	const credentials = {
+		SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop',
+		SYNTHETIC_ADMIN_USERNAME: 'admin',
+		SYNTHETIC_ADMIN_PASSWORD: 'secret'
+	};
+	const configurations = [
+		{ lifecycle: 'true', maintenance: 'false' },
+		{ lifecycle: 'false', maintenance: 'false' },
+		{ lifecycle: 'false', maintenance: 'true' }
+	];
+
+	expect(documentedRows).toEqual(
+		configurations.map(({ lifecycle, maintenance }) => ({
+			lifecycle,
+			maintenance,
+			count: expectedFullSuiteCheckCount({
+				...credentials,
+				SYNTHETIC_LIFECYCLE_ENABLED: lifecycle,
+				SYNTHETIC_EXPECT_MAINTENANCE: maintenance
+			})
+		}))
+	);
 });
 
 test('push builds publish an immutable image digest manifest for Compose', () => {
@@ -168,7 +210,7 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(service).not.toContain('EnvironmentFile=-/opt/synthetic-ui/runtime.env');
 	expect(service).toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=false');
 	expect(service).not.toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=true');
-	expect(service).toContain('Environment=SYNTHETIC_REPORT_ROOT=/opt/synthetic-ui/report');
+	expect(service).not.toContain('SYNTHETIC_REPORT_ROOT');
 	expect(service).toContain('Environment=SYNTHETIC_REPORT_KEEP_RUNS=3');
 	expect(service).toContain('ExecStart=/usr/bin/bash /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh');
 	expect(service).not.toContain('/usr/bin/node');
@@ -178,6 +220,9 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 		'^ghcr\\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$'
 	);
 	expect(wrapper).toContain('/app/scripts/deployment-guardrails.mjs "$@"');
+	expect(wrapper).toContain('readonly report_root="/opt/synthetic-ui/report"');
+	expect(wrapper).toContain('readonly results_root="/opt/synthetic-ui/results"');
+	expect(wrapper).not.toContain('SYNTHETIC_REPORT_ROOT');
 	expect(wrapper).toContain('exit "$run_status"');
 	expect(guardrails).toContain('unexpected non-directory entry under');
 	expect(guardrails).toContain('container report commands must run as pwuser UID 1001');
@@ -189,6 +234,17 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	);
 	expect(asRecord(monitor.environment).PLAYWRIGHT_REPORT_RUN_ID).toBe(
 		'${PLAYWRIGHT_REPORT_RUN_ID:-latest}'
+	);
+	const productionVolumes = [
+		'/opt/synthetic-ui/results:/app/test-results',
+		'/opt/synthetic-ui/report:/app/playwright-report'
+	];
+	expect(monitor.volumes).toEqual(productionVolumes);
+	const wrapperBindSources = [...wrapper.matchAll(
+		/^readonly (?:report|results)_root="([^"]+)"$/gm
+	)].map((match) => match[1]).sort();
+	expect(wrapperBindSources).toEqual(
+		productionVolumes.map((volume) => volume.split(':', 1)[0]).sort()
 	);
 	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(3);
 	expect(
