@@ -121,16 +121,30 @@ npm run test:ui-mode      # debug interactively
 npm run test:headed       # see the browser
 ```
 
-### Updates
+### Digest-pinned updates
 
-The systemd service runs `docker compose pull --quiet` on every invocation.
-When the timer is explicitly enabled in the future, a new image build will be
-picked up on the next run. To pull manually:
+Each `master` push uploads an `image-digest-synthetic-ui` artifact containing
+`image-digest-synthetic-ui.tsv`. Its stable schema is
+`component`, `repository`, `digest`, `source_sha`, with exactly one data record.
+Download the artifact from the intended successful workflow run and verify its
+full source SHA before using the repository and digest fields.
+
+Run that exact immutable image through Compose without changing the checkout or
+secrets file:
 
 ```bash
-sudo docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull
-sudo systemctl start synthetic-ui.service  # run immediately
+IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<digest-from-artifact>'
+sudo env SYNTHETIC_UI_IMAGE="$IMAGE" docker compose \
+  -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull
+sudo env SYNTHETIC_UI_IMAGE="$IMAGE" docker compose \
+  -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
 ```
+
+The inline override applies only to these commands. Compose still reads the
+existing `/opt/synthetic-ui/secrets/env`; no credential is copied or changed.
+This runs the one-shot monitor directly and does not enable or restart its
+timer, NetBird, or Caddy. Do not use the default mutable `latest` image for a
+production run.
 
 ## Metrics
 

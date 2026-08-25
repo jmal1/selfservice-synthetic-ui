@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
 	expectedFullSuiteCheckCount,
 	loadSyntheticConfig,
@@ -82,4 +84,27 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 			SYNTHETIC_EXPECT_MAINTENANCE: 'false'
 		})
 	).toBe(16);
+});
+
+test('push builds publish an immutable image digest manifest for Compose', () => {
+	const workflow = readFileSync(join(process.cwd(), '.github/workflows/build.yml'), 'utf8');
+	const compose = readFileSync(join(process.cwd(), 'deploy/docker-compose.yml'), 'utf8');
+
+	expect(workflow).toContain("branches: [master, main]");
+	expect(workflow).toContain("id: build");
+	expect(workflow).toContain("IMAGE_DIGEST: ${{ steps.build.outputs.digest }}");
+	expect(workflow).toContain("SOURCE_SHA: ${{ github.sha }}");
+	expect(workflow).toContain('[[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]');
+	expect(workflow).toContain('[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]');
+	expect(workflow).toContain(
+		"printf 'component\\trepository\\tdigest\\tsource_sha\\n' > image-digest-synthetic-ui.tsv"
+	);
+	expect(workflow).toContain(
+		"'synthetic-ui\\tghcr.io/jmal1/selfservice-synthetic-ui\\t%s\\t%s\\n'"
+	);
+	expect(workflow.match(/^\s+if: github\.event_name == 'push'\s*$/gm)).toHaveLength(2);
+	expect(workflow).toContain("name: image-digest-synthetic-ui");
+	expect(compose).toContain(
+		'image: "${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}"'
+	);
 });
