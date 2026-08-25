@@ -22,7 +22,7 @@ EnvironmentFile=/opt/synthetic-ui/image.env
 EnvironmentFile=/opt/synthetic-ui/runtime.env
 # Pull the pinned image (small layer diff once cached) then run once.
 ExecStartPre=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull --quiet
-ExecStart=/usr/bin/node /opt/synthetic-ui/app/scripts/run-synthetic-ui.mjs
+ExecStart=/usr/bin/bash /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh
 StandardOutput=journal
 StandardError=journal
 # Each run should complete in ~3 min; kill after 15 to avoid runaway.

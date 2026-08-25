@@ -1,5 +1,14 @@
 import { test, expect } from '@playwright/test';
-import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	utimesSync,
+	writeFileSync
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -73,6 +82,64 @@ test('report retention fails visibly when the runs directory contains unexpected
 	mkdirSync(runsRoot, { recursive: true });
 	writeFileSync(join(runsRoot, 'unexpected.txt'), 'not a run directory');
 	expect(() => pruneReportRuns(root, 1)).toThrow('unexpected non-directory entry');
+});
+
+test('bash host wrapper keeps pruning and preserves the compose exit code', () => {
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-wrapper-'));
+	const reportRoot = join(root, 'report');
+	const runsRoot = join(reportRoot, 'runs');
+	const dockerDir = join(root, 'bin');
+	const logFile = join(root, 'docker.log');
+	mkdirSync(runsRoot, { recursive: true });
+	mkdirSync(dockerDir, { recursive: true });
+
+	createRunDir(runsRoot, '20260825T140000Z-1001', 30_000);
+	createRunDir(runsRoot, '20260825T141000Z-1002', 20_000);
+	createRunDir(runsRoot, '20260825T142000Z-1003', 10_000);
+	createRunDir(runsRoot, '20260825T143000Z-1004', 0);
+	const outsideFile = join(root, 'leave-me-alone.txt');
+	writeFileSync(outsideFile, 'keep');
+
+	const fakeDocker = join(dockerDir, 'docker');
+	writeFileSync(
+		fakeDocker,
+		[
+			'#!/usr/bin/env bash',
+			'set -euo pipefail',
+			'printf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"',
+			'exit "${FAKE_DOCKER_EXIT:-0}"'
+		].join('\n')
+	);
+	chmodSync(fakeDocker, 0o755);
+
+	const wrapper = join(process.cwd(), 'scripts', 'run-synthetic-ui.sh').replace(/\\/g, '/');
+	const result = spawnSync('bash', [wrapper], {
+		cwd: process.cwd(),
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
+			FAKE_DOCKER_EXIT: '7',
+			FAKE_DOCKER_LOG: logFile,
+			SYNTHETIC_REPORT_ROOT: reportRoot,
+			SYNTHETIC_REPORT_KEEP_RUNS: '2',
+			SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
+		}
+	});
+
+	expect(result.status, result.stderr).toBe(7);
+	expect(result.stdout).toContain('[synthetic-ui] report output folder: ./playwright-report/runs/');
+	expect(existsSync(outsideFile)).toBe(true);
+	expect(existsSync(join(runsRoot, '20260825T143000Z-1004'))).toBe(true);
+	expect(existsSync(join(runsRoot, '20260825T142000Z-1003'))).toBe(true);
+	expect(existsSync(join(runsRoot, '20260825T141000Z-1002'))).toBe(false);
+	expect(existsSync(join(runsRoot, '20260825T140000Z-1001'))).toBe(false);
+	expect(result.stderr).not.toContain('report retention failed');
+	expect(readFileSync(logFile, 'utf8')).toContain('compose -f');
+	expect(readFileSync(logFile, 'utf8')).toContain('run --rm monitor');
+	expect(result.stderr).toBe('');
+	expect(result.stdout).toContain('report output folder');
+	expect(result.stdout).not.toContain('node');
 });
 
 function createRunDir(root: string, name: string, ageMs: number): string {

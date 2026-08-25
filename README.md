@@ -86,6 +86,8 @@ sudo systemctl daemon-reload
 The production wrapper writes each HTML report to
 `/opt/synthetic-ui/report/runs/<run-id>` and keeps only the newest three runs,
 so failure evidence stays bounded without touching unrelated host files.
+The host launcher is a Bash wrapper; it validates the exact SHA-tagged image,
+runs Docker Compose, and prunes report history without requiring `/usr/bin/node`.
 
 Do **not** enable or start `synthetic-ui.timer` as part of this change. A safe
 manual run is appropriate only after the coordinated backend and UI
