@@ -62,11 +62,7 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           SOURCE_SHA: ${{ github.sha }}
-        run: |
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          printf 'synthetic-ui\tghcr.io/jmal1/selfservice-synthetic-ui\t%s\t%s\n' \
-            "$IMAGE_DIGEST" "$SOURCE_SHA" > image-digest-synthetic-ui.tsv
+        run: node scripts/write-image-digest-manifest.mjs image-digest-synthetic-ui.tsv
       - name: Upload image digest manifest
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4

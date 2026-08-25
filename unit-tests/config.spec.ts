@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 import {
 	expectedFullSuiteCheckCount,
 	loadSyntheticConfig,
@@ -87,26 +90,87 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 });
 
 test('push builds publish an immutable image digest manifest for Compose', () => {
-	const workflow = readFileSync(join(process.cwd(), '.github/workflows/build.yml'), 'utf8');
-	const compose = readFileSync(join(process.cwd(), 'deploy/docker-compose.yml'), 'utf8');
-	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
+	const workflowText = readFileSync(join(process.cwd(), '.github/workflows/build.yml'), 'utf8');
+	const workflow = asRecord(parse(workflowText));
+	const triggers = asRecord(workflow.on);
+	const push = asRecord(triggers.push);
+	expect(push.branches).toEqual(['master', 'main']);
 
-	expect(workflow).toContain("branches: [master, main]");
-	expect(workflow).toContain("id: build");
-	expect(workflow).toContain("type=raw,value=${{ github.sha }}");
-	expect(workflow).toContain("org.opencontainers.image.revision=${{ github.sha }}");
-	expect(workflow).toContain("IMAGE_DIGEST: ${{ steps.build.outputs.digest }}");
-	expect(workflow).toContain("SOURCE_SHA: ${{ github.sha }}");
-	expect(workflow).toContain('[[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]');
-	expect(workflow).toContain('[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]');
-	expect(workflow).not.toContain("component\\trepository\\tdigest\\tsource_sha");
-	expect(workflow).toContain(
-		"'synthetic-ui\\tghcr.io/jmal1/selfservice-synthetic-ui\\t%s\\t%s\\n'"
+	const jobs = asRecord(workflow.jobs);
+	const buildJob = asRecord(jobs['build-and-push']);
+	expect(buildJob.if).toBe("github.event_name == 'push' || github.event_name == 'workflow_dispatch'");
+	if (!Array.isArray(buildJob.steps)) {
+		throw new Error('build-and-push.steps must be an array');
+	}
+	const steps = buildJob.steps.map(asRecord);
+	const metadata = steps.find((step) => step.uses === 'docker/metadata-action@v5');
+	const build = steps.find((step) => step.uses === 'docker/build-push-action@v5');
+	const writeManifest = steps.find((step) => step.name === 'Write image digest manifest');
+	const uploadManifest = steps.find((step) => step.uses === 'actions/upload-artifact@v4');
+
+	expect(asRecord(metadata?.with).tags).toContain('type=raw,value=${{ github.sha }}');
+	expect(asRecord(metadata?.with).labels).toContain(
+		'org.opencontainers.image.revision=${{ github.sha }}'
 	);
-	expect(workflow.match(/^\s+if: github\.event_name == 'push'\s*$/gm)).toHaveLength(2);
-	expect(workflow).toContain("name: image-digest-synthetic-ui");
-	expect(compose).toContain(
-		'image: "${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}"'
+	expect(build?.id).toBe('build');
+	expect(asRecord(build?.with).push).toBe(true);
+	expect(writeManifest?.if).toBe("github.event_name == 'push'");
+	expect(writeManifest?.run).toBe(
+		'node scripts/write-image-digest-manifest.mjs image-digest-synthetic-ui.tsv'
+	);
+	expect(asRecord(writeManifest?.env)).toEqual({
+		IMAGE_DIGEST: '${{ steps.build.outputs.digest }}',
+		SOURCE_SHA: '${{ github.sha }}'
+	});
+	expect(uploadManifest?.if).toBe("github.event_name == 'push'");
+	expect(asRecord(uploadManifest?.with)).toMatchObject({
+		name: 'image-digest-synthetic-ui',
+		path: 'image-digest-synthetic-ui.tsv',
+		'if-no-files-found': 'error'
+	});
+
+	const compose = asRecord(
+		parse(readFileSync(join(process.cwd(), 'deploy/docker-compose.yml'), 'utf8'))
+	);
+	const services = asRecord(compose.services);
+	const monitor = asRecord(services.monitor);
+	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
+	expect(monitor.image).toBe(
+		'${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}'
 	);
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
+
+	const digest = `sha256:${'a'.repeat(64)}`;
+	const sourceSha = 'b'.repeat(40);
+	const tempDirectory = mkdtempSync(join(tmpdir(), 'synthetic-ui-manifest-'));
+	const outputPath = join(tempDirectory, 'image-digest-synthetic-ui.tsv');
+	try {
+		execFileSync(
+			process.execPath,
+			[join(process.cwd(), 'scripts/write-image-digest-manifest.mjs'), outputPath],
+			{
+				env: { ...process.env, IMAGE_DIGEST: digest, SOURCE_SHA: sourceSha }
+			}
+		);
+		const manifest = readFileSync(outputPath, 'utf8');
+		expect(manifest).toBe(
+			`synthetic-ui\tghcr.io/jmal1/selfservice-synthetic-ui\t${digest}\t${sourceSha}\n`
+		);
+		expect(manifest.trimEnd().split('\t')).toEqual([
+			'synthetic-ui',
+			'ghcr.io/jmal1/selfservice-synthetic-ui',
+			digest,
+			sourceSha
+		]);
+		expect(manifest.split('\n')).toHaveLength(2);
+	} finally {
+		rmSync(tempDirectory, { recursive: true, force: true });
+	}
 });
+
+function asRecord(value: unknown): Record<string, unknown> {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		throw new Error('expected a mapping');
+	}
+	return value as Record<string, unknown>;
+}

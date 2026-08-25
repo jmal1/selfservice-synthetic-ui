@@ -131,60 +131,140 @@ record with the stable schema `component`, `repository`, `digest`, `source_sha`:
 synthetic-ui	ghcr.io/jmal1/selfservice-synthetic-ui	sha256:<64 lowercase hex>	<40-character source SHA>
 ```
 
-Download the artifact from the intended successful workflow run and verify its
-full source SHA. Then install the immutable image reference in the dedicated,
-non-secret systemd environment file. This does not edit Compose or the
-credentials file:
+`/opt/synthetic-ui/app` is an installed-file directory, not a Git checkout.
+Stage the two deployment files from a clean, exact-SHA checkout on the Windows
+admin machine. The following PowerShell also reads the downloaded artifact and
+prints the values needed for host verification:
+
+```powershell
+$SourceSha = '<full-SHA-of-approved-workflow-run>'
+$Work = Join-Path $env:TEMP "synthetic-ui-$SourceSha"
+git clone --no-checkout https://github.com/jmal1/selfservice-synthetic-ui.git $Work
+git -C $Work fetch --no-tags origin $SourceSha
+git -C $Work checkout --detach $SourceSha
+if ((git -C $Work rev-parse HEAD) -ne $SourceSha) { throw 'source SHA mismatch' }
+if (git -C $Work status --porcelain) { throw 'operator checkout is not clean' }
+
+$Lines = @(Get-Content .\image-digest-synthetic-ui.tsv)
+if ($Lines.Count -ne 1) { throw 'manifest must contain exactly one record' }
+$Fields = $Lines[0] -split "`t"
+if ($Fields.Count -ne 4 -or $Fields[0] -ne 'synthetic-ui' -or
+    $Fields[1] -ne 'ghcr.io/jmal1/selfservice-synthetic-ui' -or
+    $Fields[3] -ne $SourceSha) { throw 'manifest fields do not match the approved run' }
+if ($Fields[2] -notmatch '^sha256:[0-9a-f]{64}$') { throw 'invalid image digest' }
+
+$Compose = Join-Path $Work 'deploy\docker-compose.yml'
+$Service = Join-Path $Work 'deploy\synthetic-ui.service'
+$ComposeHash = (Get-FileHash -Algorithm SHA256 $Compose).Hash.ToLower()
+$ServiceHash = (Get-FileHash -Algorithm SHA256 $Service).Hash.ToLower()
+$Image = "$($Fields[1])@$($Fields[2])"
+$ComposeStage = "/tmp/docker-compose.$SourceSha.yml"
+$ServiceStage = "/tmp/synthetic-ui.$SourceSha.service"
+
+# Use the approved Vault-issued SSH credential/config for this target.
+scp $Compose "jmal@192.168.68.95:$ComposeStage"
+scp $Service "jmal@192.168.68.95:$ServiceStage"
+"SOURCE_SHA=$SourceSha"
+"IMAGE=$Image"
+"COMPOSE_SHA256=$ComposeHash"
+"SERVICE_SHA256=$ServiceHash"
+```
+
+Connect to `jmal@192.168.68.95` with the same Vault-backed SSH access. Paste
+the four printed values, then perform the atomic host install. This pauses only
+the synthetic timer so it cannot race the file replacement; it waits for any
+active oneshot run to finish and does not restart NetBird or Caddy:
 
 ```bash
-IFS=$'\t' read -r COMPONENT REPOSITORY DIGEST SOURCE_SHA < image-digest-synthetic-ui.tsv
-test "$COMPONENT" = synthetic-ui
-test "$REPOSITORY" = ghcr.io/jmal1/selfservice-synthetic-ui
-test "$SOURCE_SHA" = '<full-SHA-of-approved-workflow-run>'
-[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-IMAGE="$REPOSITORY@$DIGEST"
+SOURCE_SHA='<printed full source SHA>'
+IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<printed digest>'
+COMPOSE_SHA256='<printed lowercase hash>'
+SERVICE_SHA256='<printed lowercase hash>'
+COMPOSE_STAGE="/tmp/docker-compose.$SOURCE_SHA.yml"
+SERVICE_STAGE="/tmp/synthetic-ui.$SOURCE_SHA.service"
 
-# Preserve the last known-good pin for rollback, then atomically install the new pin.
+TIMER_WAS_ACTIVE="$(systemctl is-active synthetic-ui.timer || true)"
+sudo systemctl stop synthetic-ui.timer
+while STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)" &&
+  [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
+  sleep 5
+done
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP="/opt/synthetic-ui/backups/$STAMP"
+sudo install -d -m 0755 "$BACKUP"
+sudo cp -a /opt/synthetic-ui/app/deploy/docker-compose.yml "$BACKUP/"
+sudo cp -a /etc/systemd/system/synthetic-ui.service "$BACKUP/"
 if sudo test -f /opt/synthetic-ui/image.env; then
-  sudo cp -a /opt/synthetic-ui/image.env /opt/synthetic-ui/image.env.previous
+  sudo cp -a /opt/synthetic-ui/image.env "$BACKUP/"
 fi
+
+printf '%s  %s\n' "$COMPOSE_SHA256" "$COMPOSE_STAGE" | sha256sum -c -
+printf '%s  %s\n' "$SERVICE_SHA256" "$SERVICE_STAGE" | sha256sum -c -
+sudo install -m 0644 "$COMPOSE_STAGE" \
+  /opt/synthetic-ui/app/deploy/docker-compose.yml.new
+sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
+  /opt/synthetic-ui/app/deploy/docker-compose.yml
+sudo install -m 0644 "$SERVICE_STAGE" \
+  /etc/systemd/system/synthetic-ui.service.new
+sudo mv /etc/systemd/system/synthetic-ui.service.new \
+  /etc/systemd/system/synthetic-ui.service
 printf 'SYNTHETIC_UI_IMAGE=%s\n' "$IMAGE" |
   sudo tee /opt/synthetic-ui/image.env.new >/dev/null
 sudo chmod 0644 /opt/synthetic-ui/image.env.new
 sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
-
-# Install the updated unit only after the required pin exists; this does not start it.
-sudo cp /opt/synthetic-ui/app/deploy/synthetic-ui.service /etc/systemd/system/
+printf '%s\n' "$SOURCE_SHA" |
+  sudo tee /opt/synthetic-ui/source.sha >/dev/null
 sudo systemctl daemon-reload
 
-# Dry proof: output must be exactly the approved repository@digest.
-sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
-  -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images'
-
-# Validate one run through the same pinned systemd path used by the timer.
+RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
+  exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
+  config --images')"
+test "$RESOLVED_IMAGE" = "$IMAGE"
 sudo systemctl start synthetic-ui.service
 sudo systemctl show synthetic-ui.service -p Result -p ExecMainStatus
 sudo journalctl -u synthetic-ui.service -n 100 --no-pager
 
-# Verify timer state without enabling, disabling, or restarting it.
+if [ "$TIMER_WAS_ACTIVE" = active ]; then
+  sudo systemctl start synthetic-ui.timer
+fi
 sudo systemctl is-enabled synthetic-ui.timer
 sudo systemctl is-active synthetic-ui.timer
 sudo systemctl list-timers synthetic-ui.timer --no-pager
+sudo rm -f "$COMPOSE_STAGE" "$SERVICE_STAGE"
 ```
 
-Compose still reads the existing `/opt/synthetic-ui/secrets/env`; the image pin
-contains no credential. The mandatory `EnvironmentFile` makes scheduled runs
-fail closed rather than fall back to `latest` when the pin is missing. None of
-these commands restarts NetBird or Caddy.
+Compose still reads `/opt/synthetic-ui/secrets/env`; the image pin contains no
+credential. The mandatory `EnvironmentFile` makes scheduled runs fail closed
+rather than fall back to `latest`.
 
-To roll back, restore the prior pin, prove the resolved image, and run the
-one-shot service only if rollback validation is approved:
+For rollback, stop the synthetic timer and wait for the oneshot as above. Use
+the chosen timestamped backup only if it contains `image.env` and its Compose
+and service files have the immutable-pin contract; otherwise leave the timer
+stopped because the pre-migration backup is mutable-tag-only:
 
 ```bash
-sudo cp -a /opt/synthetic-ui/image.env.previous /opt/synthetic-ui/image.env
+BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'
+sudo test -f "$BACKUP/image.env"
+sudo grep -F 'SYNTHETIC_UI_IMAGE' "$BACKUP/docker-compose.yml"
+sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
+  "$BACKUP/synthetic-ui.service"
+sudo install -m 0644 "$BACKUP/docker-compose.yml" \
+  /opt/synthetic-ui/app/deploy/docker-compose.yml.new
+sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
+  /opt/synthetic-ui/app/deploy/docker-compose.yml
+sudo install -m 0644 "$BACKUP/synthetic-ui.service" \
+  /etc/systemd/system/synthetic-ui.service.new
+sudo mv /etc/systemd/system/synthetic-ui.service.new \
+  /etc/systemd/system/synthetic-ui.service
+sudo install -m 0644 "$BACKUP/image.env" /opt/synthetic-ui/image.env.new
+sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
+sudo systemctl daemon-reload
 sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
   -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images'
 sudo systemctl start synthetic-ui.service
+sudo systemctl start synthetic-ui.timer
+sudo systemctl is-active synthetic-ui.timer
 ```
 
 ## Metrics
