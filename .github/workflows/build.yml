@@ -42,8 +42,11 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ github.sha }}
             type=sha,format=short
             type=ref,event=branch
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
       - uses: docker/build-push-action@v5
         id: build
         with:
@@ -62,9 +65,8 @@ jobs:
         run: |
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          printf 'component\trepository\tdigest\tsource_sha\n' > image-digest-synthetic-ui.tsv
           printf 'synthetic-ui\tghcr.io/jmal1/selfservice-synthetic-ui\t%s\t%s\n' \
-            "$IMAGE_DIGEST" "$SOURCE_SHA" >> image-digest-synthetic-ui.tsv
+            "$IMAGE_DIGEST" "$SOURCE_SHA" > image-digest-synthetic-ui.tsv
       - name: Upload image digest manifest
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4

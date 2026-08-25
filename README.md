@@ -124,27 +124,68 @@ npm run test:headed       # see the browser
 ### Digest-pinned updates
 
 Each `master` push uploads an `image-digest-synthetic-ui` artifact containing
-`image-digest-synthetic-ui.tsv`. Its stable schema is
-`component`, `repository`, `digest`, `source_sha`, with exactly one data record.
-Download the artifact from the intended successful workflow run and verify its
-full source SHA before using the repository and digest fields.
+`image-digest-synthetic-ui.tsv`. It has no header and exactly one tab-separated
+record with the stable schema `component`, `repository`, `digest`, `source_sha`:
 
-Run that exact immutable image through Compose without changing the checkout or
-secrets file:
-
-```bash
-IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<digest-from-artifact>'
-sudo env SYNTHETIC_UI_IMAGE="$IMAGE" docker compose \
-  -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull
-sudo env SYNTHETIC_UI_IMAGE="$IMAGE" docker compose \
-  -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
+```text
+synthetic-ui	ghcr.io/jmal1/selfservice-synthetic-ui	sha256:<64 lowercase hex>	<40-character source SHA>
 ```
 
-The inline override applies only to these commands. Compose still reads the
-existing `/opt/synthetic-ui/secrets/env`; no credential is copied or changed.
-This runs the one-shot monitor directly and does not enable or restart its
-timer, NetBird, or Caddy. Do not use the default mutable `latest` image for a
-production run.
+Download the artifact from the intended successful workflow run and verify its
+full source SHA. Then install the immutable image reference in the dedicated,
+non-secret systemd environment file. This does not edit Compose or the
+credentials file:
+
+```bash
+IFS=$'\t' read -r COMPONENT REPOSITORY DIGEST SOURCE_SHA < image-digest-synthetic-ui.tsv
+test "$COMPONENT" = synthetic-ui
+test "$REPOSITORY" = ghcr.io/jmal1/selfservice-synthetic-ui
+test "$SOURCE_SHA" = '<full-SHA-of-approved-workflow-run>'
+[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+IMAGE="$REPOSITORY@$DIGEST"
+
+# Preserve the last known-good pin for rollback, then atomically install the new pin.
+if sudo test -f /opt/synthetic-ui/image.env; then
+  sudo cp -a /opt/synthetic-ui/image.env /opt/synthetic-ui/image.env.previous
+fi
+printf 'SYNTHETIC_UI_IMAGE=%s\n' "$IMAGE" |
+  sudo tee /opt/synthetic-ui/image.env.new >/dev/null
+sudo chmod 0644 /opt/synthetic-ui/image.env.new
+sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
+
+# Install the updated unit only after the required pin exists; this does not start it.
+sudo cp /opt/synthetic-ui/app/deploy/synthetic-ui.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# Dry proof: output must be exactly the approved repository@digest.
+sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+  -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images'
+
+# Validate one run through the same pinned systemd path used by the timer.
+sudo systemctl start synthetic-ui.service
+sudo systemctl show synthetic-ui.service -p Result -p ExecMainStatus
+sudo journalctl -u synthetic-ui.service -n 100 --no-pager
+
+# Verify timer state without enabling, disabling, or restarting it.
+sudo systemctl is-enabled synthetic-ui.timer
+sudo systemctl is-active synthetic-ui.timer
+sudo systemctl list-timers synthetic-ui.timer --no-pager
+```
+
+Compose still reads the existing `/opt/synthetic-ui/secrets/env`; the image pin
+contains no credential. The mandatory `EnvironmentFile` makes scheduled runs
+fail closed rather than fall back to `latest` when the pin is missing. None of
+these commands restarts NetBird or Caddy.
+
+To roll back, restore the prior pin, prove the resolved image, and run the
+one-shot service only if rollback validation is approved:
+
+```bash
+sudo cp -a /opt/synthetic-ui/image.env.previous /opt/synthetic-ui/image.env
+sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+  -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images'
+sudo systemctl start synthetic-ui.service
+```
 
 ## Metrics
 

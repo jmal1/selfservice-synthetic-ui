@@ -14,7 +14,9 @@ WorkingDirectory=/opt/synthetic-ui/app
 # the coordinated API/UI rollout is complete and provisioning is approved.
 Environment=SYNTHETIC_LIFECYCLE_ENABLED=false
 Environment=SYNTHETIC_EXPECT_MAINTENANCE=true
-# Pull the latest image (small layer diff once cached) then run once.
+# Non-secret, digest-pinned image selection. Fail closed if the pin is absent.
+EnvironmentFile=/opt/synthetic-ui/image.env
+# Pull the pinned image (small layer diff once cached) then run once.
 ExecStartPre=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull --quiet
 ExecStart=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
 StandardOutput=journal

@@ -89,16 +89,17 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 test('push builds publish an immutable image digest manifest for Compose', () => {
 	const workflow = readFileSync(join(process.cwd(), '.github/workflows/build.yml'), 'utf8');
 	const compose = readFileSync(join(process.cwd(), 'deploy/docker-compose.yml'), 'utf8');
+	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
 
 	expect(workflow).toContain("branches: [master, main]");
 	expect(workflow).toContain("id: build");
+	expect(workflow).toContain("type=raw,value=${{ github.sha }}");
+	expect(workflow).toContain("org.opencontainers.image.revision=${{ github.sha }}");
 	expect(workflow).toContain("IMAGE_DIGEST: ${{ steps.build.outputs.digest }}");
 	expect(workflow).toContain("SOURCE_SHA: ${{ github.sha }}");
 	expect(workflow).toContain('[[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]');
 	expect(workflow).toContain('[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]');
-	expect(workflow).toContain(
-		"printf 'component\\trepository\\tdigest\\tsource_sha\\n' > image-digest-synthetic-ui.tsv"
-	);
+	expect(workflow).not.toContain("component\\trepository\\tdigest\\tsource_sha");
 	expect(workflow).toContain(
 		"'synthetic-ui\\tghcr.io/jmal1/selfservice-synthetic-ui\\t%s\\t%s\\n'"
 	);
@@ -107,4 +108,5 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(compose).toContain(
 		'image: "${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}"'
 	);
+	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
 });
