@@ -207,14 +207,23 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain('the deploy contract uses that full SHA reference');
 	expect(readme).toContain('$Wrapper = Join-Path $Work \'scripts\\run-synthetic-ui.sh\'');
 	expect(readme).toContain('$WrapperHash = (Get-FileHash -Algorithm SHA256 $Wrapper).Hash.ToLower()');
+	expect(readme).toContain("WRAPPER_SHA256='<printed lowercase hash>'");
 	expect(readme).toContain('$WRAPPER_STAGE = "/tmp/run-synthetic-ui.$SourceSha.sh"');
 	expect(readme).toContain('test -f "$WRAPPER_STAGE"');
 	expect(readme).toContain('$Image = "$($Fields[1]):$SourceSha"');
 	expect(readme).toContain('scp $Wrapper "jmal@192.168.68.95:$WRAPPER_STAGE"');
 	expect(readme).toContain('"WRAPPER_SHA256=$WrapperHash"');
+	expect(readme).toContain('[[ "$WRAPPER_SHA256" =~ ^[0-9a-f]{64}$ ]]');
+	expect(readme).toContain('printf \'%s  %s\\n\' "$WRAPPER_SHA256" "$WRAPPER_STAGE" | sha256sum -c -');
 	expect(readme).toContain(
 		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]'
 	);
+	expect(readme).toContain("PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<operator-supplied current image digest>'");
+	expect(readme).toContain(
+		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]'
+	);
+	expect(readme).toContain('PREVIOUS_IMAGE_ID="$(sudo docker image inspect \\');
+	expect(readme).toContain('validate_runtime "$BACKUP/runtime.env" false');
 	expect(readme).toContain('/opt/synthetic-ui/report/runs/<run-id>');
 	expect(readme).toContain('keeps only the newest three runs');
 	expect(readme).toContain('The host launcher is a Bash wrapper');
@@ -223,7 +232,6 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain('if sudo test -f /opt/synthetic-ui/image.env; then');
 	expect(readme).toContain('INSTALL_MODE=pinned');
 	expect(readme).toContain('INSTALL_MODE=first-migration');
-	expect(readme).toContain('test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"');
 	expect(readme).toContain('test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"');
 	expect(readme).toContain('test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"');
 	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh "$BACKUP/run-synthetic-ui.sh"');

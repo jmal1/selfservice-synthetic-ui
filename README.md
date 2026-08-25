@@ -206,12 +206,12 @@ validate_runtime() {
 
 SOURCE_SHA='<printed full source SHA>'
 IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui:<printed full source SHA>'
-PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui:<operator-supplied current full source SHA>'
+WRAPPER_SHA256='<printed lowercase hash>'
 COMPOSE_SHA256='<printed lowercase hash>'
 SERVICE_SHA256='<printed lowercase hash>'
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
 [[ "$IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
-[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
+[[ "$WRAPPER_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$SERVICE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 COMPOSE_STAGE="/tmp/docker-compose.$SOURCE_SHA.yml"
@@ -221,16 +221,15 @@ test -f "$COMPOSE_STAGE"
 test -f "$SERVICE_STAGE"
 test -f "$WRAPPER_STAGE"
 
-PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
-  "$PREVIOUS_IMAGE" --format '{{.Id}}')"
 if sudo test -f /opt/synthetic-ui/image.env; then
 INSTALL_MODE=pinned
 sudo test -f /opt/synthetic-ui/runtime.env
 validate_runtime /opt/synthetic-ui/runtime.env false
-CURRENT_IMAGE="$(sudo sed -n \
+PREVIOUS_IMAGE="$(sudo sed -n \
   's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
-[[ "$CURRENT_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
-test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"
+[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
+PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+  "$PREVIOUS_IMAGE" --format '{{.Id}}')"
 CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
   'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
   -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
@@ -243,6 +242,10 @@ INSTALL_MODE=first-migration
 if sudo test -f /opt/synthetic-ui/runtime.env; then
   validate_runtime /opt/synthetic-ui/runtime.env false
 fi
+PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<operator-supplied current image digest>'
+[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+  "$PREVIOUS_IMAGE" --format '{{.Id}}')"
 fi
 
 sudo systemctl disable --now synthetic-ui.timer
@@ -266,7 +269,7 @@ printf '%s\n' "$INSTALL_MODE" | sudo tee "$BACKUP/install-mode" >/dev/null
 if sudo test -f /opt/synthetic-ui/image.env; then
   sudo cp -a /opt/synthetic-ui/image.env "$BACKUP/image.env"
 else
-  # Synthesize the proven immutable prior pin for first-migration rollback.
+  # Synthesize the proven immutable prior digest for first-migration rollback.
   printf 'SYNTHETIC_UI_IMAGE=%s\n' "$PREVIOUS_IMAGE" |
     sudo tee "$BACKUP/image.env" >/dev/null
   sudo chmod 0644 "$BACKUP/image.env"
@@ -284,6 +287,7 @@ fi
 printf '%s\n' "$PREVIOUS_IMAGE_ID" |
   sudo tee "$BACKUP/previous-image-id" >/dev/null
 
+printf '%s  %s\n' "$WRAPPER_SHA256" "$WRAPPER_STAGE" | sha256sum -c -
 printf '%s  %s\n' "$COMPOSE_SHA256" "$COMPOSE_STAGE" | sha256sum -c -
 printf '%s  %s\n' "$SERVICE_SHA256" "$SERVICE_STAGE" | sha256sum -c -
 sudo install -m 0644 "$COMPOSE_STAGE" \
@@ -337,9 +341,10 @@ rather than accept a mutable tag or an empty pin.
 
 Rollback reads the backup's recorded install mode. A first-migration backup is
 **image-only** because its old Compose and unit used an unpinned image
-reference; a pinned-upgrade backup restores only after verifying its immutable
-Compose, unit, pin, and source identity. Both modes prove the exact resolved
-image, run one validation, and keep the timer disabled:
+reference; the rollback image comes from the known current immutable digest
+already on the host. A pinned-upgrade backup restores only after verifying its
+immutable Compose, unit, pin, and source identity. Both modes prove the exact
+resolved image, run one validation, and keep the timer disabled:
 
 ```bash
 set -euo pipefail
@@ -367,15 +372,18 @@ validate_runtime "$BACKUP/runtime.env" false
 sudo test -f "$BACKUP/install-mode"
 INSTALL_MODE="$(sudo cat "$BACKUP/install-mode")"
 ROLLBACK_IMAGE="$(sudo sed -n 's/^SYNTHETIC_UI_IMAGE=//p' "$BACKUP/image.env")"
-[[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
 
 if [ "$INSTALL_MODE" = first-migration ]; then
+  [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+  sudo docker image inspect "$ROLLBACK_IMAGE" --format '{{.Id}}' >/dev/null
   # Retain the newly installed immutable files; restore only the prior pin.
   sudo grep -F 'SYNTHETIC_UI_IMAGE' \
     /opt/synthetic-ui/app/deploy/docker-compose.yml
   sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
     /etc/systemd/system/synthetic-ui.service
 elif [ "$INSTALL_MODE" = pinned ]; then
+  [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
+  sudo docker image inspect "$ROLLBACK_IMAGE" --format '{{.Id}}' >/dev/null
   sudo test -f "$BACKUP/source.sha"
   ROLLBACK_SOURCE_SHA="$(sudo cat "$BACKUP/source.sha")"
   [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
