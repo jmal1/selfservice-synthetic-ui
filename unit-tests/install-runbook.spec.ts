@@ -17,6 +17,7 @@
  *   - Invalid pin format: fail closed with exit 1
  *   - Host preflight: recursively repair report/runs/results for UID 1001
  *   - Bash wrapper: host UID writability is not confused with container UID access
+ *   - Pinned rollback: direct exact-image canary without legacy wrapper/retention
  */
 import { test, expect } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
@@ -93,6 +94,25 @@ function extractPowerShellBlock(readme: string, anchor: string): string[] {
 		}
 	}
 	return [];
+}
+
+function assertPinnedRollbackContainment(rollback: string): void {
+	if (/sudo systemctl start synthetic-ui\.service/.test(rollback)) {
+		throw new Error('pinned rollback must not start the restored legacy service');
+	}
+	if (!rollback.includes('sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"')) {
+		throw new Error('pinned rollback must verify its run-scoped report');
+	}
+	if ((rollback.match(/test "\$TIMER_UNIT_STATE" = disabled/g) ?? []).length < 2) {
+		throw new Error('pinned rollback must reassert timer containment');
+	}
+	if (
+		(rollback.match(
+			/test "\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)" = inactive/g
+		) ?? []).length < 2
+	) {
+		throw new Error('pinned rollback must reassert service containment');
+	}
 }
 
 test('install runbook creates /opt/synthetic-ui/app/scripts before installing the wrapper', () => {
@@ -406,6 +426,142 @@ test('one-time setup recursively assigns report and results trees to UID 1001', 
 	expect(chownIdx).toBeGreaterThanOrEqual(0);
 	expect(command).toContain('/opt/synthetic-ui/report');
 	expect(command).toContain('/opt/synthetic-ui/results');
+});
+
+test('pinned rollback restores prior state but validates through one contained direct canary', () => {
+	const block = extractBashBlock(loadReadme(), "BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'");
+	expect(block.length, 'expected to find rollback bash block').toBeGreaterThan(0);
+	const syntax = spawnSync('bash', ['-n'], {
+		input: block.join('\n'),
+		encoding: 'utf8'
+	});
+	expect(syntax.status, syntax.stderr).toBe(0);
+	const rollback = block.join('\n');
+	assertPinnedRollbackContainment(rollback);
+	const pinnedStart = block
+		.map((line, index) => ({ line, index }))
+		.filter(({ line }) => line.trim() === 'if [ "$INSTALL_MODE" = pinned ]; then')
+		.at(-1)?.index ?? -1;
+	const firstMigrationStart = block.findIndex(
+		(line, index) => index > pinnedStart && line.includes('elif [ "$INSTALL_MODE" = first-migration ]; then')
+	);
+	expect(pinnedStart, 'rollback must have a pinned validation branch').toBeGreaterThanOrEqual(0);
+	expect(firstMigrationStart).toBeGreaterThan(pinnedStart);
+	const pinnedBranch = block.slice(pinnedStart, firstMigrationStart).join('\n');
+
+	const wrapperRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0755 "$BACKUP/run-synthetic-ui.sh"')
+	);
+	const composeRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/docker-compose.yml"')
+	);
+	const serviceRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/synthetic-ui.service"')
+	);
+	const sourceRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo tee /opt/synthetic-ui/source.sha.new')
+	);
+	const imageRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/image.env"')
+	);
+	const runtimeRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/runtime.env"')
+	);
+	const resolvedProofIdx = block.findIndex((line) =>
+		line.includes('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"')
+	);
+	const runtimeProofIdx = block.findIndex((line) =>
+		line.includes('validate_runtime /opt/synthetic-ui/runtime.env false')
+	);
+	const directRunIdx = block.findIndex((line) =>
+		line.includes('run --rm --no-deps --pull never monitor')
+	);
+	for (const prerequisite of [
+		wrapperRestoreIdx,
+		composeRestoreIdx,
+		serviceRestoreIdx,
+		sourceRestoreIdx,
+		imageRestoreIdx,
+		runtimeRestoreIdx,
+		resolvedProofIdx,
+		runtimeProofIdx
+	]) {
+		expect(prerequisite).toBeGreaterThanOrEqual(0);
+		expect(prerequisite, 'restore and exact-image proofs must precede the canary').toBeLessThan(
+			directRunIdx
+		);
+	}
+
+	expect(
+		block.filter((line) => line.includes('run --rm --no-deps --pull never monitor'))
+	).toHaveLength(1);
+	expect(pinnedBranch).toContain('. /opt/synthetic-ui/image.env');
+	expect(pinnedBranch).toContain('. /opt/synthetic-ui/runtime.env');
+	expect(pinnedBranch).toContain('set -aeu');
+	expect(pinnedBranch).toContain('test "$SYNTHETIC_UI_IMAGE" = "$ROLLBACK_IMAGE"');
+	expect(pinnedBranch).toContain('ROLLBACK_CANARY_STATUS=$?');
+	expect(pinnedBranch).toContain('test "$ROLLBACK_CANARY_STATUS" = 0');
+	expect(pinnedBranch).toContain(
+		'sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"'
+	);
+	expect(pinnedBranch).toMatch(
+		/ROLLBACK_RUN_ID="rollback-\$\(date -u \+%Y%m%dT%H%M%SZ\)-\$\$"/
+	);
+
+	expect(rollback).not.toMatch(/sudo systemctl start synthetic-ui\.service/);
+	expect(rollback).not.toMatch(/(?:bash|exec).*run-synthetic-ui\.sh/);
+	expect(pinnedBranch).not.toContain('deployment-guardrails.mjs');
+	expect(pinnedBranch).not.toMatch(/\bprune\b|SYNTHETIC_REPORT_KEEP_RUNS/);
+	expect(rollback).not.toMatch(/\bchown\b|\bsetfacl\b|\b(?:user|group)mod\b/);
+	expect(rollback).not.toMatch(/chmod\s+(?:0?777|0?666)\b/);
+
+	const canaryTail = block.slice(directRunIdx).join('\n');
+	expect(canaryTail).toContain(
+		'test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive'
+	);
+	expect(canaryTail).toContain('test "$TIMER_UNIT_STATE" = disabled');
+	expect(canaryTail).toContain('test "$TIMER_ACTIVE_STATE" = inactive');
+	expect(rollback.match(/test "\$TIMER_UNIT_STATE" = disabled/g)).toHaveLength(2);
+	expect(rollback.match(/test "\$TIMER_ACTIVE_STATE" = inactive/g)).toHaveLength(2);
+	expect(
+		rollback.match(
+			/test "\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)" = inactive/g
+		)
+	).toHaveLength(2);
+});
+
+test('rollback contract rejects legacy starts and missing report/containment assertions', () => {
+	const rollback = extractBashBlock(
+		loadReadme(),
+		"BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'"
+	).join('\n');
+	const reportCheck = 'sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"';
+	const serviceCheck =
+		'test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive';
+
+	expect(() =>
+		assertPinnedRollbackContainment(
+			rollback.replace(reportCheck, `sudo systemctl start synthetic-ui.service\n  ${reportCheck}`)
+		)
+	).toThrow('must not start the restored legacy service');
+	expect(() =>
+		assertPinnedRollbackContainment(rollback.replace(reportCheck, 'true'))
+	).toThrow('must verify its run-scoped report');
+	expect(() =>
+		assertPinnedRollbackContainment(
+			rollback
+				.replaceAll('test "$TIMER_UNIT_STATE" = disabled', 'true')
+				.replaceAll(serviceCheck, 'true')
+		)
+	).toThrow(/timer containment|service containment/);
+});
+
+test('rollback documentation warns that ownership rollback is forward-only containment', () => {
+	const readme = loadReadme();
+	expect(readme).toContain('Danger — containment rollback only.');
+	expect(readme).toContain('ownership migration');
+	expect(readme).toContain('is forward-only');
+	expect(readme).toContain('do not enable scheduling until the forward host hardening is');
 });
 
 // ---------------------------------------------------------------------------

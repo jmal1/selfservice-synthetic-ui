@@ -387,8 +387,9 @@ Rollback reads the backup's recorded install mode. A first-migration backup is
 reference; the rollback image comes from the known current immutable digest
 already on the host. A pinned-upgrade backup restores only after verifying its
 immutable Compose, unit, pin, and source identity. Both modes prove the exact
-resolved image and keep the timer disabled; only pinned-upgrade runs a service
-validation:
+resolved image and keep the timer disabled. A pinned-upgrade rollback runs one
+direct Compose canary without invoking the restored legacy wrapper or its
+host-side retention:
 
 ```bash
 set -euo pipefail
@@ -409,6 +410,8 @@ while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
   sleep 5
   STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
 done
+sudo systemctl reset-failed synthetic-ui.service
+test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive
 
 sudo test -f "$BACKUP/image.env"
 sudo test -f "$BACKUP/runtime.env"
@@ -470,12 +473,25 @@ TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
 test "$TIMER_UNIT_STATE" = disabled
 test "$TIMER_ACTIVE_STATE" = inactive
 if [ "$INSTALL_MODE" = pinned ]; then
-  sudo systemctl start synthetic-ui.service
-  SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
-  SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
-  test "$SERVICE_RESULT" = success
-  test "$SERVICE_STATUS" = 0
-  validate_runtime /opt/synthetic-ui/runtime.env false
+  ROLLBACK_RUN_ID="rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  [[ "$ROLLBACK_RUN_ID" =~ ^rollback-[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]]
+  set +e
+  sudo env \
+    ROLLBACK_IMAGE="$ROLLBACK_IMAGE" \
+    PLAYWRIGHT_REPORT_RUN_ID="$ROLLBACK_RUN_ID" \
+    sh -c '
+      set -aeu
+      . /opt/synthetic-ui/image.env
+      . /opt/synthetic-ui/runtime.env
+      test "$SYNTHETIC_UI_IMAGE" = "$ROLLBACK_IMAGE"
+      exec docker compose \
+        -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
+        run --rm --no-deps --pull never monitor
+    '
+  ROLLBACK_CANARY_STATUS=$?
+  set -e
+  test "$ROLLBACK_CANARY_STATUS" = 0
+  sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"
 elif [ "$INSTALL_MODE" = first-migration ]; then
   # Containment rollback only: keep the new unit/wrapper and do not start it.
   sudo test -f /etc/systemd/system/synthetic-ui.service
@@ -484,7 +500,19 @@ else
   echo "Unsupported backup install mode: $INSTALL_MODE" >&2
   exit 1
 fi
-``` 
+test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive
+TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
+TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
+test "$TIMER_UNIT_STATE" = disabled
+test "$TIMER_ACTIVE_STATE" = inactive
+```
+
+> **Danger — containment rollback only.** Report and results ownership migration
+> is forward-only; guessing a recursive UID1000 restoration is unsafe. The pinned
+> rollback therefore restores the prior files and pin but never starts the
+> restored legacy service/wrapper or runs host-side retention. Keep the timer
+> disabled and do not enable scheduling until the forward host hardening is
+> reinstalled.
 
 ### Explicit timer re-enable after containment
 
