@@ -8,15 +8,14 @@
 #   docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
 services:
   monitor:
-    image: ghcr.io/jmal1/selfservice-synthetic-ui:latest
+    image: "${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable repository@sha256 digest}"
     pull_policy: always
     env_file:
       - /opt/synthetic-ui/secrets/env
     environment:
-      # Production-safe defaults. Override only during an approved
-      # provisioning re-enable after the API and UI maintenance gates agree.
+      # Production-safe defaults: provisioning is enabled, lifecycle is contained.
       SYNTHETIC_LIFECYCLE_ENABLED: "${SYNTHETIC_LIFECYCLE_ENABLED:-false}"
-      SYNTHETIC_EXPECT_MAINTENANCE: "${SYNTHETIC_EXPECT_MAINTENANCE:-true}"
+      SYNTHETIC_EXPECT_MAINTENANCE: "${SYNTHETIC_EXPECT_MAINTENANCE:-false}"
     volumes:
       - /opt/synthetic-ui/results:/app/test-results
       - /opt/synthetic-ui/report:/app/playwright-report

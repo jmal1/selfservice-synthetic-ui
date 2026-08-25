@@ -1,4 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parse } from 'yaml';
 import {
 	expectedFullSuiteCheckCount,
 	loadSyntheticConfig,
@@ -47,6 +52,19 @@ test('maintenance expectation requires lifecycle checks disabled', () => {
 	).toThrow('SYNTHETIC_EXPECT_MAINTENANCE=true requires SYNTHETIC_LIFECYCLE_ENABLED=false');
 });
 
+test('recovery enables lifecycle without expecting maintenance', () => {
+	expect(
+		loadSyntheticConfig({
+			SYNTHETIC_LIFECYCLE_ENABLED: 'true',
+			SYNTHETIC_EXPECT_MAINTENANCE: 'false',
+			SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop'
+		})
+	).toEqual({
+		lifecycleEnabled: true,
+		expectMaintenance: false
+	});
+});
+
 test('enabled lifecycle fails configuration when its template is missing', () => {
 	expect(() =>
 		loadSyntheticConfig({
@@ -83,3 +101,177 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 		})
 	).toBe(16);
 });
+
+test('push builds publish an immutable image digest manifest for Compose', () => {
+	const workflowText = readFileSync(join(process.cwd(), '.github/workflows/build.yml'), 'utf8');
+	const workflow = asRecord(parse(workflowText));
+	const triggers = asRecord(workflow.on);
+	const push = asRecord(triggers.push);
+	expect(push.branches).toEqual(['master', 'main']);
+	expect(Object.prototype.hasOwnProperty.call(triggers, 'workflow_dispatch')).toBe(true);
+
+	const jobs = asRecord(workflow.jobs);
+	const buildJob = asRecord(jobs['build-and-push']);
+	expect(buildJob.if).toBe("github.event_name == 'push' || github.event_name == 'workflow_dispatch'");
+	if (!Array.isArray(buildJob.steps)) {
+		throw new Error('build-and-push.steps must be an array');
+	}
+	const steps = buildJob.steps.map(asRecord);
+	const metadata = steps.find((step) => step.uses === 'docker/metadata-action@v5');
+	const build = steps.find((step) => step.uses === 'docker/build-push-action@v5');
+	const writeManifest = steps.find((step) => step.name === 'Write image digest manifest');
+	const uploadManifest = steps.find((step) => step.uses === 'actions/upload-artifact@v4');
+
+	expect(asRecord(metadata?.with).tags).toContain('type=raw,value=${{ github.sha }}');
+	expect(asRecord(metadata?.with).labels).toContain(
+		'org.opencontainers.image.revision=${{ github.sha }}'
+	);
+	expect(build?.id).toBe('build');
+	expect(asRecord(build?.with).push).toBe(true);
+	expect(writeManifest?.if).toBeUndefined();
+	expect(writeManifest?.run).toBe(
+		'node scripts/write-image-digest-manifest.mjs image-digest-synthetic-ui.tsv'
+	);
+	expect(asRecord(writeManifest?.env)).toEqual({
+		IMAGE_DIGEST: '${{ steps.build.outputs.digest }}',
+		SOURCE_SHA: '${{ github.sha }}'
+	});
+	expect(uploadManifest?.if).toBeUndefined();
+	expect(asRecord(uploadManifest?.with)).toMatchObject({
+		name: 'image-digest-synthetic-ui',
+		path: 'image-digest-synthetic-ui.tsv',
+		'if-no-files-found': 'error'
+	});
+
+	const compose = asRecord(
+		parse(readFileSync(join(process.cwd(), 'deploy/docker-compose.yml'), 'utf8'))
+	);
+	const services = asRecord(compose.services);
+	const monitor = asRecord(services.monitor);
+	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
+	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+	expect(monitor.image).toBe(
+		'${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable repository@sha256 digest}'
+	);
+	expect(String(monitor.image)).not.toContain(':-');
+	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
+	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/runtime.env');
+	expect(service).not.toContain('EnvironmentFile=-/opt/synthetic-ui/runtime.env');
+	expect(service).toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=false');
+	expect(service).not.toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=true');
+	expect(asRecord(monitor.environment).SYNTHETIC_EXPECT_MAINTENANCE).toBe(
+		'${SYNTHETIC_EXPECT_MAINTENANCE:-false}'
+	);
+	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(3);
+	expect(
+		readme.match(
+			/^SERVICE_RESULT="\$\(systemctl show synthetic-ui\.service -p Result --value\)"$/gm
+		)
+	).toHaveLength(4);
+	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(4);
+	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(4);
+	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
+	expect(
+		readme.match(
+			/^\s*STATE="\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)"$/gm
+		)
+	).toHaveLength(4);
+	expect(readme).not.toContain('while STATE="$(systemctl show');
+	expect(readme.match(/^sudo systemctl disable --now synthetic-ui\.timer$/gm)).toHaveLength(3);
+	expect(readme.match(/^sudo systemctl enable --now synthetic-ui\.timer$/gm)).toHaveLength(1);
+	expect(readme).not.toContain('sudo systemctl start synthetic-ui.timer');
+	expect(readme.match(/^test "\$TIMER_UNIT_STATE" = disabled$/gm)).toHaveLength(2);
+	expect(readme.match(/^test "\$TIMER_ACTIVE_STATE" = inactive$/gm)).toHaveLength(2);
+	expect(readme).toContain('test "$STORAGE_STALE_HANDLE_RATE" = 0');
+	expect(readme).toContain('test "$APD_COUNT" = 0');
+	expect(readme).toContain('test "$UI_CHECKS" = green');
+	expect(readme).toContain(
+		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]'
+	);
+	expect(readme).toContain('if sudo test -f /opt/synthetic-ui/image.env; then');
+	expect(readme).toContain('INSTALL_MODE=pinned');
+	expect(readme).toContain('INSTALL_MODE=first-migration');
+	expect(readme).toContain('test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"');
+	expect(readme).toContain('test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"');
+	expect(readme).toContain('test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"');
+	expect(readme).toContain('test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"');
+	expect(readme).toContain('sudo tee "$BACKUP/image.env" >/dev/null');
+	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/source.sha "$BACKUP/source.sha"');
+	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/runtime.env "$BACKUP/runtime.env"');
+	expect(readme).toContain("sudo tee \"$BACKUP/runtime.env\" >/dev/null");
+	expect(readme).toContain('INSTALL_MODE="$(sudo cat "$BACKUP/install-mode")"');
+	expect(readme).toContain('if [ "$INSTALL_MODE" = first-migration ]; then');
+	expect(readme).toContain('elif [ "$INSTALL_MODE" = pinned ]; then');
+	expect(readme).toContain('sudo install -m 0644 "$BACKUP/docker-compose.yml"');
+	expect(readme).toContain('sudo install -m 0644 "$BACKUP/synthetic-ui.service"');
+	expect(readme).toContain('sudo tee /opt/synthetic-ui/source.sha.new >/dev/null');
+	expect(readme).toContain(
+		'sudo install -m 0644 "$BACKUP/runtime.env" /opt/synthetic-ui/runtime.env.new'
+	);
+	expect(readme.match(/^validate_runtime\(\) \{$/gm)).toHaveLength(3);
+	expect(
+		readme.match(
+			/^\s*'SYNTHETIC_LIFECYCLE_ENABLED=%s\\nSYNTHETIC_EXPECT_MAINTENANCE=false\\n' "\$2" \|$/gm
+		)
+	).toHaveLength(3);
+	expect(readme).not.toContain("grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false'");
+	expect(readme).toContain(
+		"'SYNTHETIC_LIFECYCLE_ENABLED=%s\\nSYNTHETIC_EXPECT_MAINTENANCE=false\\n' \"$1\" |"
+	);
+	expect(
+		readme.match(
+			/printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\\nSYNTHETIC_EXPECT_MAINTENANCE=false\\n' \|/g
+		)
+	).toHaveLength(2);
+	expect(readme).toContain('trap restore_containment ERR');
+	expect(readme).toContain('restore_containment() {');
+	const cleanupStart = readme.indexOf('restore_containment() {');
+	const cleanupEnd = readme.indexOf('\n}\n', cleanupStart);
+	const cleanup = readme.slice(cleanupStart, cleanupEnd);
+	expect(cleanup).toContain('if ! sudo systemctl disable --now synthetic-ui.timer; then');
+	expect(cleanup).toContain('if ! set_lifecycle false; then');
+	expect(cleanup).toContain('MANUAL INTERVENTION REQUIRED');
+	expect(cleanup.indexOf('if ! sudo systemctl disable')).toBeLessThan(
+		cleanup.indexOf('if ! set_lifecycle false')
+	);
+	expect(readme).toContain('set_lifecycle true');
+	expect(readme).toContain('test "$POST_LIFECYCLE_STORAGE_STALE_HANDLE_RATE" = 0');
+	expect(readme).toContain('test "$POST_LIFECYCLE_APD_COUNT" = 0');
+	expect(readme.indexOf('test "$POST_LIFECYCLE_APD_COUNT" = 0')).toBeLessThan(
+		readme.indexOf('sudo systemctl enable --now synthetic-ui.timer')
+	);
+
+	const digest = `sha256:${'a'.repeat(64)}`;
+	const sourceSha = 'b'.repeat(40);
+	const tempDirectory = mkdtempSync(join(tmpdir(), 'synthetic-ui-manifest-'));
+	const outputPath = join(tempDirectory, 'image-digest-synthetic-ui.tsv');
+	try {
+		execFileSync(
+			process.execPath,
+			[join(process.cwd(), 'scripts/write-image-digest-manifest.mjs'), outputPath],
+			{
+				env: { ...process.env, IMAGE_DIGEST: digest, SOURCE_SHA: sourceSha }
+			}
+		);
+		const manifest = readFileSync(outputPath, 'utf8');
+		expect(manifest).toBe(
+			`synthetic-ui\tghcr.io/jmal1/selfservice-synthetic-ui\t${digest}\t${sourceSha}\n`
+		);
+		expect(manifest.trimEnd().split('\t')).toEqual([
+			'synthetic-ui',
+			'ghcr.io/jmal1/selfservice-synthetic-ui',
+			digest,
+			sourceSha
+		]);
+		expect(manifest.split('\n')).toHaveLength(2);
+	} finally {
+		rmSync(tempDirectory, { recursive: true, force: true });
+	}
+});
+
+function asRecord(value: unknown): Record<string, unknown> {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		throw new Error('expected a mapping');
+	}
+	return value as Record<string, unknown>;
+}
