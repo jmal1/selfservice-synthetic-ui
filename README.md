@@ -298,6 +298,7 @@ sudo install -m 0644 "$SERVICE_STAGE" \
   /etc/systemd/system/synthetic-ui.service.new
 sudo mv /etc/systemd/system/synthetic-ui.service.new \
   /etc/systemd/system/synthetic-ui.service
+sudo install -d -m 0755 /opt/synthetic-ui/app/scripts
 sudo install -m 0755 "$WRAPPER_STAGE" \
   /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new
 sudo mv /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new \
@@ -332,7 +333,7 @@ TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
 test "$TIMER_UNIT_STATE" = disabled
 test "$TIMER_ACTIVE_STATE" = inactive
 sudo systemctl list-timers synthetic-ui.timer --no-pager
-sudo rm -f "$COMPOSE_STAGE" "$SERVICE_STAGE"
+sudo rm -f "$COMPOSE_STAGE" "$SERVICE_STAGE" "$WRAPPER_STAGE"
 ```
 
 Compose still reads `/opt/synthetic-ui/secrets/env`; the image pin contains no
