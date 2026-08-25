@@ -143,24 +143,24 @@ test('incomplete full execution replaces stale green metrics with failed coverag
 
 	const replacement = buildExposition(
 		[{ check: 'safe_navigation', success: 1, durationSeconds: 1 }],
-		20,
+		19,
 		123
 	);
 	expect(replacement).toContain(
-		'crucible_synthetic_ui_overall_coverage_ratio{layer="ui"} 0.050000'
+		'crucible_synthetic_ui_overall_coverage_ratio{layer="ui"} 0.052632'
 	);
 	expect(replacement).toContain('crucible_synthetic_ui_overall_success{layer="ui"} 0');
 });
 
 test('non-passed full result forces failure even with complete discovery', () => {
-	expect(mustForceOverallFailure('failed', 20, 20)).toBe(true);
-	expect(mustForceOverallFailure('timedout', 20, 20)).toBe(true);
-	expect(mustForceOverallFailure('passed', 20, 20)).toBe(false);
+	expect(mustForceOverallFailure('failed', 19, 19)).toBe(true);
+	expect(mustForceOverallFailure('timedout', 19, 19)).toBe(true);
+	expect(mustForceOverallFailure('passed', 19, 19)).toBe(false);
 });
 
 test('discovery mismatch forces failure even when Playwright reports passed', () => {
-	expect(mustForceOverallFailure('passed', 19, 20)).toBe(true);
-	expect(mustForceOverallFailure('passed', 21, 20)).toBe(true);
+	expect(mustForceOverallFailure('passed', 18, 19)).toBe(true);
+	expect(mustForceOverallFailure('passed', 20, 19)).toBe(true);
 });
 
 test('list-only discovery is the only unfiltered zero-execution mode that does not replace metrics', () => {

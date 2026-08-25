@@ -179,9 +179,9 @@ current expected check counts are:
 
 | lifecycle | expected maintenance | expected checks |
 |-----------|----------------------|-----------------|
-| `true`    | `false`              | 20              |
-| `false`   | `false`              | 19              |
-| `false`   | `true`               | 20              |
+| `true`    | `false`              | 19              |
+| `false`   | `false`              | 18              |
+| `false`   | `true`               | 19              |
 
 The `true`/`true` combination is rejected. If the optional instructor identity
 is absent, its four statically skipped checks are excluded from the dynamic
