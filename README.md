@@ -344,7 +344,8 @@ Rollback reads the backup's recorded install mode. A first-migration backup is
 reference; the rollback image comes from the known current immutable digest
 already on the host. A pinned-upgrade backup restores only after verifying its
 immutable Compose, unit, pin, and source identity. Both modes prove the exact
-resolved image, run one validation, and keep the timer disabled:
+resolved image and keep the timer disabled; only pinned-upgrade runs a service
+validation:
 
 ```bash
 set -euo pipefail
@@ -421,17 +422,26 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   config --images')"
 test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"
 validate_runtime /opt/synthetic-ui/runtime.env false
-sudo systemctl start synthetic-ui.service
-SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
-SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
-test "$SERVICE_RESULT" = success
-test "$SERVICE_STATUS" = 0
-validate_runtime /opt/synthetic-ui/runtime.env false
 TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
 TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
 test "$TIMER_UNIT_STATE" = disabled
 test "$TIMER_ACTIVE_STATE" = inactive
-```
+if [ "$INSTALL_MODE" = pinned ]; then
+  sudo systemctl start synthetic-ui.service
+  SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+  SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+  test "$SERVICE_RESULT" = success
+  test "$SERVICE_STATUS" = 0
+  validate_runtime /opt/synthetic-ui/runtime.env false
+elif [ "$INSTALL_MODE" = first-migration ]; then
+  # Containment rollback only: keep the new unit/wrapper and do not start it.
+  sudo test -f /etc/systemd/system/synthetic-ui.service
+  sudo test -f /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh
+else
+  echo "Unsupported backup install mode: $INSTALL_MODE" >&2
+  exit 1
+fi
+``` 
 
 ### Explicit timer re-enable after containment
 

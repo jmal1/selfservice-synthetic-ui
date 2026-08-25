@@ -186,9 +186,9 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 		readme.match(
 			/^SERVICE_RESULT="\$\(systemctl show synthetic-ui\.service -p Result --value\)"$/gm
 		)
-	).toHaveLength(4);
-	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(4);
-	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(4);
+	).toHaveLength(3);
+	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(3);
+	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(3);
 	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
 	expect(
 		readme.match(
@@ -224,6 +224,13 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	);
 	expect(readme).toContain('PREVIOUS_IMAGE_ID="$(sudo docker image inspect \\');
 	expect(readme).toContain('validate_runtime "$BACKUP/runtime.env" false');
+	expect(readme).toMatch(
+		/Both modes prove the exact[\s\S]*only pinned-upgrade runs a service[\s\S]*validation:/
+	);
+	expect(readme).toContain(
+		'Containment rollback only: keep the new unit/wrapper and do not start it.'
+	);
+	expect(readme.match(/^\s*sudo systemctl start synthetic-ui\.service$/gm)).toHaveLength(3);
 	expect(readme).toContain('/opt/synthetic-ui/report/runs/<run-id>');
 	expect(readme).toContain('keeps only the newest three runs');
 	expect(readme).toContain('The host launcher is a Bash wrapper');
