@@ -171,9 +171,10 @@ scp $Service "jmal@192.168.68.95:$ServiceStage"
 ```
 
 Connect to `jmal@192.168.68.95` with the same Vault-backed SSH access. Paste
-the four printed values, then perform the atomic host install. This pauses only
-the synthetic timer so it cannot race the file replacement; it waits for any
-active oneshot run to finish and does not restart NetBird or Caddy:
+the four printed values, then perform the atomic host install. This
+idempotently disables the synthetic timer so it cannot race the file
+replacement, waits for any active oneshot run to finish, and does not restart
+NetBird or Caddy:
 
 ```bash
 set -euo pipefail
@@ -191,9 +192,7 @@ SERVICE_STAGE="/tmp/synthetic-ui.$SOURCE_SHA.service"
 test -f "$COMPOSE_STAGE"
 test -f "$SERVICE_STAGE"
 
-systemctl is-enabled --quiet synthetic-ui.timer
-systemctl is-active --quiet synthetic-ui.timer
-sudo systemctl stop synthetic-ui.timer
+sudo systemctl disable --now synthetic-ui.timer
 STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
 while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
   sleep 5
@@ -238,9 +237,10 @@ test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
 sudo journalctl -u synthetic-ui.service -n 100 --no-pager
 
-sudo systemctl start synthetic-ui.timer
-systemctl is-enabled --quiet synthetic-ui.timer
-systemctl is-active --quiet synthetic-ui.timer
+TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
+TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
+test "$TIMER_UNIT_STATE" = disabled
+test "$TIMER_ACTIVE_STATE" = inactive
 sudo systemctl list-timers synthetic-ui.timer --no-pager
 sudo rm -f "$COMPOSE_STAGE" "$SERVICE_STAGE"
 ```
@@ -249,18 +249,16 @@ Compose still reads `/opt/synthetic-ui/secrets/env`; the image pin contains no
 credential. The mandatory `EnvironmentFile` makes scheduled runs fail closed
 rather than fall back to `latest`.
 
-For rollback, stop the synthetic timer and wait for the oneshot as above. Use
-the chosen timestamped backup only if it contains `image.env` and its Compose
-and service files have the immutable-pin contract; otherwise leave the timer
-stopped because the pre-migration backup is mutable-tag-only:
+For rollback, keep the synthetic timer disabled and wait for the oneshot as
+above. Use the chosen timestamped backup only if it contains `image.env` and
+its Compose and service files have the immutable-pin contract; otherwise leave
+the timer disabled because the pre-migration backup is mutable-tag-only:
 
 ```bash
 set -euo pipefail
 
 BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'
-systemctl is-enabled --quiet synthetic-ui.timer
-systemctl is-active --quiet synthetic-ui.timer
-sudo systemctl stop synthetic-ui.timer
+sudo systemctl disable --now synthetic-ui.timer
 STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
 while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
   sleep 5
@@ -293,9 +291,40 @@ SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
 test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
-sudo systemctl start synthetic-ui.timer
-systemctl is-enabled --quiet synthetic-ui.timer
-systemctl is-active --quiet synthetic-ui.timer
+TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
+TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
+test "$TIMER_UNIT_STATE" = disabled
+test "$TIMER_ACTIVE_STATE" = inactive
+```
+
+### Explicit timer re-enable after containment
+
+Do not bundle timer re-enable with image install or rollback. It is a separate
+operator-approved action only after monitoring confirms the ESXi1 NFS41 stale
+handle rate is `0`, APD count is `0`, and the pinned one-shot UI checks are
+green. The API monitor remains independently suspended until its own approval.
+
+```bash
+set -euo pipefail
+
+STORAGE_STALE_HANDLE_RATE='<verified monitoring value>'
+APD_COUNT='<verified monitoring value>'
+UI_CHECKS='<verified pinned one-shot result>'
+OPERATOR_APPROVAL='<approved change/ticket reference>'
+test "$STORAGE_STALE_HANDLE_RATE" = 0
+test "$APD_COUNT" = 0
+test "$UI_CHECKS" = green
+test -n "$OPERATOR_APPROVAL"
+test "$OPERATOR_APPROVAL" != '<approved change/ticket reference>'
+
+SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+test "$SERVICE_RESULT" = success
+test "$SERVICE_STATUS" = 0
+sudo systemctl enable --now synthetic-ui.timer
+test "$(systemctl show synthetic-ui.timer -p UnitFileState --value)" = enabled
+test "$(systemctl show synthetic-ui.timer -p ActiveState --value)" = active
+sudo systemctl list-timers synthetic-ui.timer --no-pager
 ```
 
 ## Metrics
@@ -399,8 +428,8 @@ Most likely:
 1. Create `tests/specs/<name>.spec.ts` modeled on an existing spec.
 2. Use the `withMetric` fixture from `tests/fixtures.ts` so it
    automatically pushes the duration/success metrics on completion.
-3. Push to `main` — netbirdv01's git timer (or a manual `git pull`
-   on next run) will pick it up within an hour.
+3. Merge to `master`, then use the approved digest-pinned deployment procedure
+   above. netbirdv01 does not contain a Git checkout or auto-update from Git.
 4. Add a Grafana panel for the new metric if it warrants its own
    widget (otherwise it rolls up into the default sum dashboard).
 

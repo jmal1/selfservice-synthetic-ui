@@ -140,14 +140,14 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 		'${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}'
 	);
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
-	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(2);
+	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(3);
 	expect(
 		readme.match(
 			/^SERVICE_RESULT="\$\(systemctl show synthetic-ui\.service -p Result --value\)"$/gm
 		)
-	).toHaveLength(2);
-	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(2);
-	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(2);
+	).toHaveLength(3);
+	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(3);
+	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(3);
 	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
 	expect(
 		readme.match(
@@ -155,6 +155,14 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 		)
 	).toHaveLength(4);
 	expect(readme).not.toContain('while STATE="$(systemctl show');
+	expect(readme.match(/^sudo systemctl disable --now synthetic-ui\.timer$/gm)).toHaveLength(3);
+	expect(readme.match(/^sudo systemctl enable --now synthetic-ui\.timer$/gm)).toHaveLength(1);
+	expect(readme).not.toContain('sudo systemctl start synthetic-ui.timer');
+	expect(readme.match(/^test "\$TIMER_UNIT_STATE" = disabled$/gm)).toHaveLength(2);
+	expect(readme.match(/^test "\$TIMER_ACTIVE_STATE" = inactive$/gm)).toHaveLength(2);
+	expect(readme).toContain('test "$STORAGE_STALE_HANDLE_RATE" = 0');
+	expect(readme).toContain('test "$APD_COUNT" = 0');
+	expect(readme).toContain('test "$UI_CHECKS" = green');
 
 	const digest = `sha256:${'a'.repeat(64)}`;
 	const sourceSha = 'b'.repeat(40);
