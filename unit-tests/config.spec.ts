@@ -163,6 +163,15 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain('test "$STORAGE_STALE_HANDLE_RATE" = 0');
 	expect(readme).toContain('test "$APD_COUNT" = 0');
 	expect(readme).toContain('test "$UI_CHECKS" = green');
+	expect(readme).toContain(
+		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]'
+	);
+	expect(readme).toContain('sudo test ! -e /opt/synthetic-ui/image.env');
+	expect(readme).toContain('test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"');
+	expect(readme).toContain('sudo tee "$BACKUP/image.env" >/dev/null');
+	expect(readme).toContain('rollback is **image-only**');
+	expect(readme).not.toContain('sudo install -m 0644 "$BACKUP/docker-compose.yml"');
+	expect(readme).not.toContain('sudo install -m 0644 "$BACKUP/synthetic-ui.service"');
 
 	const digest = `sha256:${'a'.repeat(64)}`;
 	const sourceSha = 'b'.repeat(40);

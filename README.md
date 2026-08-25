@@ -181,16 +181,27 @@ set -euo pipefail
 
 SOURCE_SHA='<printed full source SHA>'
 IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<printed digest>'
+PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<operator-supplied current digest>'
 COMPOSE_SHA256='<printed lowercase hash>'
 SERVICE_SHA256='<printed lowercase hash>'
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
 [[ "$IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
 [[ "$COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$SERVICE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 COMPOSE_STAGE="/tmp/docker-compose.$SOURCE_SHA.yml"
 SERVICE_STAGE="/tmp/synthetic-ui.$SOURCE_SHA.service"
 test -f "$COMPOSE_STAGE"
 test -f "$SERVICE_STAGE"
+
+# First migration only: prove the supplied prior digest is the image behind
+# the currently deployed mutable tag before replacing any files.
+sudo test ! -e /opt/synthetic-ui/image.env
+LATEST_IMAGE_ID="$(sudo docker image inspect \
+  ghcr.io/jmal1/selfservice-synthetic-ui:latest --format '{{.Id}}')"
+PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+  "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"
 
 sudo systemctl disable --now synthetic-ui.timer
 STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
@@ -204,9 +215,12 @@ BACKUP="/opt/synthetic-ui/backups/$STAMP"
 sudo install -d -m 0755 "$BACKUP"
 sudo cp -a /opt/synthetic-ui/app/deploy/docker-compose.yml "$BACKUP/"
 sudo cp -a /etc/systemd/system/synthetic-ui.service "$BACKUP/"
-if sudo test -f /opt/synthetic-ui/image.env; then
-  sudo cp -a /opt/synthetic-ui/image.env "$BACKUP/"
-fi
+# Old deployment files are retained for forensics, not first-migration rollback.
+printf 'SYNTHETIC_UI_IMAGE=%s\n' "$PREVIOUS_IMAGE" |
+  sudo tee "$BACKUP/image.env" >/dev/null
+sudo chmod 0644 "$BACKUP/image.env"
+printf '%s\n' "$PREVIOUS_IMAGE_ID" |
+  sudo tee "$BACKUP/previous-image-id" >/dev/null
 
 printf '%s  %s\n' "$COMPOSE_SHA256" "$COMPOSE_STAGE" | sha256sum -c -
 printf '%s  %s\n' "$SERVICE_SHA256" "$SERVICE_STAGE" | sha256sum -c -
@@ -249,10 +263,11 @@ Compose still reads `/opt/synthetic-ui/secrets/env`; the image pin contains no
 credential. The mandatory `EnvironmentFile` makes scheduled runs fail closed
 rather than fall back to `latest`.
 
-For rollback, keep the synthetic timer disabled and wait for the oneshot as
-above. Use the chosen timestamped backup only if it contains `image.env` and
-its Compose and service files have the immutable-pin contract; otherwise leave
-the timer disabled because the pre-migration backup is mutable-tag-only:
+For the first migration, rollback is **image-only**: retain the newly installed
+immutable Compose and unit files, restore the proven prior digest pin, run one
+validation, and keep the timer disabled. The old Compose and unit backups are
+for forensic comparison only and must not be restored because they use
+`latest`:
 
 ```bash
 set -euo pipefail
@@ -266,18 +281,11 @@ while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
 done
 
 sudo test -f "$BACKUP/image.env"
-sudo grep -F 'SYNTHETIC_UI_IMAGE' "$BACKUP/docker-compose.yml"
-sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
-  "$BACKUP/synthetic-ui.service"
 ROLLBACK_IMAGE="$(sudo sed -n 's/^SYNTHETIC_UI_IMAGE=//p' "$BACKUP/image.env")"
 [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
-sudo install -m 0644 "$BACKUP/docker-compose.yml" \
-  /opt/synthetic-ui/app/deploy/docker-compose.yml.new
-sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
+sudo grep -F 'SYNTHETIC_UI_IMAGE' \
   /opt/synthetic-ui/app/deploy/docker-compose.yml
-sudo install -m 0644 "$BACKUP/synthetic-ui.service" \
-  /etc/systemd/system/synthetic-ui.service.new
-sudo mv /etc/systemd/system/synthetic-ui.service.new \
+sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
   /etc/systemd/system/synthetic-ui.service
 sudo install -m 0644 "$BACKUP/image.env" /opt/synthetic-ui/image.env.new
 sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
@@ -296,6 +304,10 @@ TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
 test "$TIMER_UNIT_STATE" = disabled
 test "$TIMER_ACTIVE_STATE" = inactive
 ```
+
+After later digest-pinned upgrades, full file-and-pin rollback may be used only
+when the selected backup's Compose and unit files both pass the immutable
+contract checks above. The first-migration mutable files never qualify.
 
 ### Explicit timer re-enable after containment
 
