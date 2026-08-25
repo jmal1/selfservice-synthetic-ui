@@ -8,7 +8,7 @@
 #   docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
 services:
   monitor:
-    image: "${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable repository@sha256 digest}"
+    image: "${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable ghcr.io/jmal1/selfservice-synthetic-ui:<40-character lowercase commit SHA> tag}"
     pull_policy: always
     env_file:
       - /opt/synthetic-ui/secrets/env
@@ -16,6 +16,8 @@ services:
       # Production-safe defaults: provisioning is enabled, lifecycle is contained.
       SYNTHETIC_LIFECYCLE_ENABLED: "${SYNTHETIC_LIFECYCLE_ENABLED:-false}"
       SYNTHETIC_EXPECT_MAINTENANCE: "${SYNTHETIC_EXPECT_MAINTENANCE:-false}"
+      # Each run writes to its own HTML report directory under the bind mount.
+      PLAYWRIGHT_REPORT_RUN_ID: "${PLAYWRIGHT_REPORT_RUN_ID:-latest}"
     volumes:
       - /opt/synthetic-ui/results:/app/test-results
       - /opt/synthetic-ui/report:/app/playwright-report

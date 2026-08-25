@@ -4,9 +4,9 @@
 # system libs preinstalled. The image is ~1.8 GB; pulled once and
 # cached on netbirdv01.
 #
-# Build:    docker build -t ghcr.io/jmal1/selfservice-synthetic-ui:latest .
+# Build:    docker build -t ghcr.io/jmal1/selfservice-synthetic-ui:<full-commit-sha> .
 # Run:      docker run --rm --env-file /opt/synthetic-ui/secrets/env \
-#               ghcr.io/jmal1/selfservice-synthetic-ui:latest
+#               ghcr.io/jmal1/selfservice-synthetic-ui:<full-commit-sha>
 FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
 WORKDIR /app
@@ -28,7 +28,7 @@ RUN mkdir -p /app/.auth /app/test-results /app/playwright-report \
 # Run as the non-root pwuser baked into the official image.
 USER pwuser
 
-# The test report is small; keep it for grafana-side correlation.
+# The test report is retained on the host by the scheduler wrapper.
 VOLUME ["/app/test-results", "/app/playwright-report"]
 
 ENTRYPOINT ["npm", "test", "--silent"]
