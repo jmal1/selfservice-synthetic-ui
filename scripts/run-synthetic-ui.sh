@@ -17,6 +17,31 @@ validate_keep_runs() {
   fi
 }
 
+validate_report_root() {
+  local root="$1"
+  # The report root is bind-mounted into the container as /app/playwright-report.
+  # The container runs as pwuser (UID 1001 in the Playwright image); the host
+  # directory must be owned by that UID so the container can create sub-directories.
+  if [[ ! -d "$root" ]]; then
+    echo "[synthetic-ui] report root '$root' does not exist; create it with: sudo install -d -m 0755 '$root' && sudo chown 1001:1001 '$root'" >&2
+    return 1
+  fi
+  if [[ ! -w "$root" ]]; then
+    echo "[synthetic-ui] report root '$root' is not writable; check permissions" >&2
+    return 1
+  fi
+  # UID ownership check is meaningful only on Linux, where Docker enforces
+  # container UIDs on bind mounts. Skip on macOS/Windows dev environments.
+  if [[ "$(uname -s 2>/dev/null)" == "Linux" ]]; then
+    local uid
+    uid="$(stat -c '%u' "$root" 2>/dev/null || true)"
+    if [[ -n "$uid" && "$uid" != 1001 ]]; then
+      echo "[synthetic-ui] report root '$root' is owned by UID $uid, not container UID 1001 (pwuser); run: sudo chown 1001:1001 '$root'" >&2
+      return 1
+    fi
+  fi
+}
+
 prune_report_runs() {
   local report_root="$1"
   local keep_runs="$2"
@@ -62,6 +87,7 @@ image="${SYNTHETIC_UI_IMAGE:-}"
 
 validate_image_reference "$image"
 validate_keep_runs "$keep_runs_raw"
+validate_report_root "$report_root"
 
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 export PLAYWRIGHT_REPORT_RUN_ID="$run_id"

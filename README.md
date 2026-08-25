@@ -63,6 +63,9 @@ Node.js, npm, or Chromium installed on the host.
 # Pull the credentials from Vault → /opt/synthetic-ui/secrets/env
 sudo mkdir -p /opt/synthetic-ui/{secrets,app,results,report/runs}
 sudo chown -R jmal:jmal /opt/synthetic-ui
+# The container runs as pwuser (UID 1001 in the Playwright image); the bind-mount
+# source directories must be owned by that UID so the container can create sub-dirs.
+sudo chown 1001:1001 /opt/synthetic-ui/report /opt/synthetic-ui/results
 
 # Edit /opt/synthetic-ui/secrets/env to set:
 #   SYNTHETIC_USERNAME=synthetic@lab.jmal.io
@@ -148,6 +151,9 @@ $SourceSha = '<full-SHA-of-approved-workflow-run>'
 $Work = Join-Path $env:TEMP "synthetic-ui-$SourceSha"
 git clone --no-checkout https://github.com/jmal1/selfservice-synthetic-ui.git $Work
 git -C $Work fetch --no-tags origin $SourceSha
+# Force LF line endings before any file is written so the hash attests repository bytes,
+# not Windows-transformed CRLF bytes. Must come after clone but before checkout.
+git -C $Work config core.autocrlf false
 git -C $Work checkout --detach $SourceSha
 if ((git -C $Work rev-parse HEAD) -ne $SourceSha) { throw 'source SHA mismatch' }
 if (git -C $Work status --porcelain) { throw 'operator checkout is not clean' }
@@ -170,6 +176,14 @@ $Wrapper = Join-Path $Work 'scripts\run-synthetic-ui.sh'
 $ComposeHash = (Get-FileHash -Algorithm SHA256 $Compose).Hash.ToLower()
 $ServiceHash = (Get-FileHash -Algorithm SHA256 $Service).Hash.ToLower()
 $WrapperHash = (Get-FileHash -Algorithm SHA256 $Wrapper).Hash.ToLower()
+# Byte-level CR rejection: prove the three staged text assets contain only LF line endings
+# (repository bytes). Any CR byte (0x0D) means core.autocrlf transformed the file.
+foreach ($StagedFile in @($Compose, $Service, $Wrapper)) {
+    $StagedBytes = [System.IO.File]::ReadAllBytes($StagedFile)
+    if ($StagedBytes -contains 13) {
+        throw "CR byte (0x0D) detected in $StagedFile — verify core.autocrlf=false was configured before checkout"
+    }
+}
 $Image = "$($Fields[1]):$SourceSha"
 $ComposeStage = "/tmp/docker-compose.$SourceSha.yml"
 $ServiceStage = "/tmp/synthetic-ui.$SourceSha.service"
@@ -222,21 +236,39 @@ test -f "$SERVICE_STAGE"
 test -f "$WRAPPER_STAGE"
 
 if sudo test -f /opt/synthetic-ui/image.env; then
-INSTALL_MODE=pinned
-sudo test -f /opt/synthetic-ui/runtime.env
-validate_runtime /opt/synthetic-ui/runtime.env false
 PREVIOUS_IMAGE="$(sudo sed -n \
   's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
-[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
-PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
-  "$PREVIOUS_IMAGE" --format '{{.Id}}')"
-CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
-  'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
-  -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
-test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
-CURRENT_IMAGE_ID="$(sudo docker image inspect \
-  "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
-test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
+if [[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]; then
+  # Normal pinned upgrade: existing install was a SHA-tagged image.
+  INSTALL_MODE=pinned
+  sudo test -f /opt/synthetic-ui/runtime.env
+  validate_runtime /opt/synthetic-ui/runtime.env false
+  PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+    "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+  CURRENT_IMAGE_ID="$(sudo docker image inspect \
+    "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
+  test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
+elif [[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]; then
+  # First-migration containment retry: image.env holds the immutable digest
+  # that a prior rollback synthesised. Prove runtime=false, digest exists
+  # locally, and current Compose resolves exactly to it before proceeding.
+  INSTALL_MODE=first-migration
+  sudo test -f /opt/synthetic-ui/runtime.env
+  validate_runtime /opt/synthetic-ui/runtime.env false
+  PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+    "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+else
+  echo "[synthetic-ui] invalid pin format in /opt/synthetic-ui/image.env: ${PREVIOUS_IMAGE@Q}" >&2
+  exit 1
+fi
 else
 INSTALL_MODE=first-migration
 if sudo test -f /opt/synthetic-ui/runtime.env; then
@@ -290,6 +322,7 @@ printf '%s\n' "$PREVIOUS_IMAGE_ID" |
 printf '%s  %s\n' "$WRAPPER_SHA256" "$WRAPPER_STAGE" | sha256sum -c -
 printf '%s  %s\n' "$COMPOSE_SHA256" "$COMPOSE_STAGE" | sha256sum -c -
 printf '%s  %s\n' "$SERVICE_SHA256" "$SERVICE_STAGE" | sha256sum -c -
+bash -n "$WRAPPER_STAGE"
 sudo install -m 0644 "$COMPOSE_STAGE" \
   /opt/synthetic-ui/app/deploy/docker-compose.yml.new
 sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
@@ -320,6 +353,9 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   config --images')"
 test "$RESOLVED_IMAGE" = "$IMAGE"
 validate_runtime /opt/synthetic-ui/runtime.env false
+# Ensure bind-mount sources are owned by the container user (pwuser UID 1001)
+# so the container can create report/results sub-directories on every run.
+sudo chown 1001:1001 /opt/synthetic-ui/report /opt/synthetic-ui/results
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
