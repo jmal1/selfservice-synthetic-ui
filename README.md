@@ -194,14 +194,34 @@ SERVICE_STAGE="/tmp/synthetic-ui.$SOURCE_SHA.service"
 test -f "$COMPOSE_STAGE"
 test -f "$SERVICE_STAGE"
 
-# First migration only: prove the supplied prior digest is the image behind
-# the currently deployed mutable tag before replacing any files.
-sudo test ! -e /opt/synthetic-ui/image.env
-LATEST_IMAGE_ID="$(sudo docker image inspect \
-  ghcr.io/jmal1/selfservice-synthetic-ui:latest --format '{{.Id}}')"
 PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
   "$PREVIOUS_IMAGE" --format '{{.Id}}')"
-test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"
+if sudo test -f /opt/synthetic-ui/image.env; then
+  INSTALL_MODE=pinned
+  sudo test -f /opt/synthetic-ui/runtime.env
+  sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
+    /opt/synthetic-ui/runtime.env
+  CURRENT_IMAGE="$(sudo sed -n \
+    's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
+  [[ "$CURRENT_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+  test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"
+  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+  CURRENT_IMAGE_ID="$(sudo docker image inspect \
+    "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
+  test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
+else
+  INSTALL_MODE=first-migration
+  if sudo test -f /opt/synthetic-ui/runtime.env; then
+    sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
+      /opt/synthetic-ui/runtime.env
+  fi
+  LATEST_IMAGE_ID="$(sudo docker image inspect \
+    ghcr.io/jmal1/selfservice-synthetic-ui:latest --format '{{.Id}}')"
+  test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"
+fi
 
 sudo systemctl disable --now synthetic-ui.timer
 STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
@@ -215,10 +235,25 @@ BACKUP="/opt/synthetic-ui/backups/$STAMP"
 sudo install -d -m 0755 "$BACKUP"
 sudo cp -a /opt/synthetic-ui/app/deploy/docker-compose.yml "$BACKUP/"
 sudo cp -a /etc/systemd/system/synthetic-ui.service "$BACKUP/"
-# Old deployment files are retained for forensics, not first-migration rollback.
-printf 'SYNTHETIC_UI_IMAGE=%s\n' "$PREVIOUS_IMAGE" |
-  sudo tee "$BACKUP/image.env" >/dev/null
-sudo chmod 0644 "$BACKUP/image.env"
+printf '%s\n' "$INSTALL_MODE" | sudo tee "$BACKUP/install-mode" >/dev/null
+if sudo test -f /opt/synthetic-ui/image.env; then
+  sudo cp -a /opt/synthetic-ui/image.env "$BACKUP/image.env"
+else
+  # Synthesize the proven immutable prior pin for first-migration rollback.
+  printf 'SYNTHETIC_UI_IMAGE=%s\n' "$PREVIOUS_IMAGE" |
+    sudo tee "$BACKUP/image.env" >/dev/null
+  sudo chmod 0644 "$BACKUP/image.env"
+fi
+if sudo test -f /opt/synthetic-ui/source.sha; then
+  sudo cp -a /opt/synthetic-ui/source.sha "$BACKUP/source.sha"
+fi
+if sudo test -f /opt/synthetic-ui/runtime.env; then
+  sudo cp -a /opt/synthetic-ui/runtime.env "$BACKUP/runtime.env"
+else
+  printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\n' |
+    sudo tee "$BACKUP/runtime.env" >/dev/null
+  sudo chmod 0644 "$BACKUP/runtime.env"
+fi
 printf '%s\n' "$PREVIOUS_IMAGE_ID" |
   sudo tee "$BACKUP/previous-image-id" >/dev/null
 
@@ -236,6 +271,10 @@ printf 'SYNTHETIC_UI_IMAGE=%s\n' "$IMAGE" |
   sudo tee /opt/synthetic-ui/image.env.new >/dev/null
 sudo chmod 0644 /opt/synthetic-ui/image.env.new
 sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
+printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\n' |
+  sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null
+sudo chmod 0644 /opt/synthetic-ui/runtime.env.new
+sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
 printf '%s\n' "$SOURCE_SHA" |
   sudo tee /opt/synthetic-ui/source.sha >/dev/null
 sudo systemctl daemon-reload
@@ -244,11 +283,15 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
   config --images')"
 test "$RESOLVED_IMAGE" = "$IMAGE"
+sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
+  /opt/synthetic-ui/runtime.env
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
 test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
+sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
+  /opt/synthetic-ui/runtime.env
 sudo journalctl -u synthetic-ui.service -n 100 --no-pager
 
 TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
@@ -263,11 +306,11 @@ Compose still reads `/opt/synthetic-ui/secrets/env`; the image pin contains no
 credential. The mandatory `EnvironmentFile` makes scheduled runs fail closed
 rather than fall back to `latest`.
 
-For the first migration, rollback is **image-only**: retain the newly installed
-immutable Compose and unit files, restore the proven prior digest pin, run one
-validation, and keep the timer disabled. The old Compose and unit backups are
-for forensic comparison only and must not be restored because they use
-`latest`:
+Rollback reads the backup's recorded install mode. A first-migration backup is
+**image-only** because its old Compose and unit use `latest`; a pinned-upgrade
+backup restores only after verifying its immutable Compose, unit, pin, and
+source identity. Both modes prove the exact resolved image, run one validation,
+and keep the timer disabled:
 
 ```bash
 set -euo pipefail
@@ -281,40 +324,74 @@ while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
 done
 
 sudo test -f "$BACKUP/image.env"
+sudo test -f "$BACKUP/runtime.env"
+sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' "$BACKUP/runtime.env"
+sudo test -f "$BACKUP/install-mode"
+INSTALL_MODE="$(sudo cat "$BACKUP/install-mode")"
 ROLLBACK_IMAGE="$(sudo sed -n 's/^SYNTHETIC_UI_IMAGE=//p' "$BACKUP/image.env")"
 [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
-sudo grep -F 'SYNTHETIC_UI_IMAGE' \
-  /opt/synthetic-ui/app/deploy/docker-compose.yml
-sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
-  /etc/systemd/system/synthetic-ui.service
+
+if [ "$INSTALL_MODE" = first-migration ]; then
+  # Retain the newly installed immutable files; restore only the prior pin.
+  sudo grep -F 'SYNTHETIC_UI_IMAGE' \
+    /opt/synthetic-ui/app/deploy/docker-compose.yml
+  sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
+    /etc/systemd/system/synthetic-ui.service
+elif [ "$INSTALL_MODE" = pinned ]; then
+  sudo test -f "$BACKUP/source.sha"
+  ROLLBACK_SOURCE_SHA="$(sudo cat "$BACKUP/source.sha")"
+  [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+  sudo grep -F 'SYNTHETIC_UI_IMAGE' "$BACKUP/docker-compose.yml"
+  sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
+    "$BACKUP/synthetic-ui.service"
+  sudo install -m 0644 "$BACKUP/docker-compose.yml" \
+    /opt/synthetic-ui/app/deploy/docker-compose.yml.new
+  sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
+    /opt/synthetic-ui/app/deploy/docker-compose.yml
+  sudo install -m 0644 "$BACKUP/synthetic-ui.service" \
+    /etc/systemd/system/synthetic-ui.service.new
+  sudo mv /etc/systemd/system/synthetic-ui.service.new \
+    /etc/systemd/system/synthetic-ui.service
+  printf '%s\n' "$ROLLBACK_SOURCE_SHA" |
+    sudo tee /opt/synthetic-ui/source.sha.new >/dev/null
+  sudo mv /opt/synthetic-ui/source.sha.new /opt/synthetic-ui/source.sha
+else
+  echo "Unsupported backup install mode: $INSTALL_MODE" >&2
+  exit 1
+fi
+
 sudo install -m 0644 "$BACKUP/image.env" /opt/synthetic-ui/image.env.new
 sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
+sudo install -m 0644 "$BACKUP/runtime.env" /opt/synthetic-ui/runtime.env.new
+sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
 sudo systemctl daemon-reload
 RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
   config --images')"
 test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"
+sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
+  /opt/synthetic-ui/runtime.env
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
 test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
+sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
+  /opt/synthetic-ui/runtime.env
 TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
 TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
 test "$TIMER_UNIT_STATE" = disabled
 test "$TIMER_ACTIVE_STATE" = inactive
 ```
 
-After later digest-pinned upgrades, full file-and-pin rollback may be used only
-when the selected backup's Compose and unit files both pass the immutable
-contract checks above. The first-migration mutable files never qualify.
-
 ### Explicit timer re-enable after containment
 
 Do not bundle timer re-enable with image install or rollback. It is a separate
-operator-approved action only after monitoring confirms the ESXi1 NFS41 stale
-handle rate is `0`, APD count is `0`, and the pinned one-shot UI checks are
-green. The API monitor remains independently suspended until its own approval.
+operator-approved action only after the non-mutating pinned UI one-shot is
+green and monitoring confirms the ESXi1 NFS41 stale-handle rate is `0` and APD
+count is `0`. The recovery runs one lifecycle-enabled one-shot while the timer
+remains disabled, checks storage again, and enables the timer only if all gates
+remain green. Any failure atomically restores lifecycle containment to `false`.
 
 ```bash
 set -euo pipefail
@@ -329,13 +406,44 @@ test "$UI_CHECKS" = green
 test -n "$OPERATOR_APPROVAL"
 test "$OPERATOR_APPROVAL" != '<approved change/ticket reference>'
 
+set_lifecycle() {
+  printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$1" |
+    sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null
+  sudo chmod 0644 /opt/synthetic-ui/runtime.env.new
+  sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
+}
+
+restore_containment() {
+  sudo systemctl disable --now synthetic-ui.timer
+  set_lifecycle false
+}
+
+test "$(systemctl show synthetic-ui.timer -p UnitFileState --value)" = disabled
+test "$(systemctl show synthetic-ui.timer -p ActiveState --value)" = inactive
+sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
+  /opt/synthetic-ui/runtime.env
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
 test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
+trap restore_containment ERR
+set_lifecycle true
+sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=true' \
+  /opt/synthetic-ui/runtime.env
+sudo systemctl start synthetic-ui.service
+SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+test "$SERVICE_RESULT" = success
+test "$SERVICE_STATUS" = 0
+
+POST_LIFECYCLE_STORAGE_STALE_HANDLE_RATE='<fresh verified monitoring value>'
+POST_LIFECYCLE_APD_COUNT='<fresh verified monitoring value>'
+test "$POST_LIFECYCLE_STORAGE_STALE_HANDLE_RATE" = 0
+test "$POST_LIFECYCLE_APD_COUNT" = 0
 sudo systemctl enable --now synthetic-ui.timer
 test "$(systemctl show synthetic-ui.timer -p UnitFileState --value)" = enabled
 test "$(systemctl show synthetic-ui.timer -p ActiveState --value)" = active
+trap - ERR
 sudo systemctl list-timers synthetic-ui.timer --no-pager
 ```
 

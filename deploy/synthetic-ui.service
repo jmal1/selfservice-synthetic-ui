@@ -16,6 +16,8 @@ Environment=SYNTHETIC_LIFECYCLE_ENABLED=false
 Environment=SYNTHETIC_EXPECT_MAINTENANCE=true
 # Non-secret, digest-pinned image selection. Fail closed if the pin is absent.
 EnvironmentFile=/opt/synthetic-ui/image.env
+# Persistent containment controls. This mandatory file overrides the defaults.
+EnvironmentFile=/opt/synthetic-ui/runtime.env
 # Pull the pinned image (small layer diff once cached) then run once.
 ExecStartPre=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull --quiet
 ExecStart=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor

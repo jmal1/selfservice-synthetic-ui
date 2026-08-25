@@ -140,14 +140,16 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 		'${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}'
 	);
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
+	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/runtime.env');
+	expect(service).not.toContain('EnvironmentFile=-/opt/synthetic-ui/runtime.env');
 	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(3);
 	expect(
 		readme.match(
 			/^SERVICE_RESULT="\$\(systemctl show synthetic-ui\.service -p Result --value\)"$/gm
 		)
-	).toHaveLength(3);
-	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(3);
-	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(3);
+	).toHaveLength(4);
+	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(4);
+	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(4);
 	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
 	expect(
 		readme.match(
@@ -166,12 +168,39 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain(
 		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]'
 	);
-	expect(readme).toContain('sudo test ! -e /opt/synthetic-ui/image.env');
+	expect(readme).toContain('if sudo test -f /opt/synthetic-ui/image.env; then');
+	expect(readme).toContain('INSTALL_MODE=pinned');
+	expect(readme).toContain('INSTALL_MODE=first-migration');
+	expect(readme).toContain('test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"');
+	expect(readme).toContain('test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"');
+	expect(readme).toContain('test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"');
 	expect(readme).toContain('test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"');
 	expect(readme).toContain('sudo tee "$BACKUP/image.env" >/dev/null');
-	expect(readme).toContain('rollback is **image-only**');
-	expect(readme).not.toContain('sudo install -m 0644 "$BACKUP/docker-compose.yml"');
-	expect(readme).not.toContain('sudo install -m 0644 "$BACKUP/synthetic-ui.service"');
+	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/source.sha "$BACKUP/source.sha"');
+	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/runtime.env "$BACKUP/runtime.env"');
+	expect(readme).toContain("sudo tee \"$BACKUP/runtime.env\" >/dev/null");
+	expect(readme).toContain('INSTALL_MODE="$(sudo cat "$BACKUP/install-mode")"');
+	expect(readme).toContain('if [ "$INSTALL_MODE" = first-migration ]; then');
+	expect(readme).toContain('elif [ "$INSTALL_MODE" = pinned ]; then');
+	expect(readme).toContain('sudo install -m 0644 "$BACKUP/docker-compose.yml"');
+	expect(readme).toContain('sudo install -m 0644 "$BACKUP/synthetic-ui.service"');
+	expect(readme).toContain('sudo tee /opt/synthetic-ui/source.sha.new >/dev/null');
+	expect(readme).toContain(
+		'sudo install -m 0644 "$BACKUP/runtime.env" /opt/synthetic-ui/runtime.env.new'
+	);
+	expect(
+		readme.match(
+			/^\s*sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \\$/gm
+		)
+	).toHaveLength(7);
+	expect(readme).toContain('trap restore_containment ERR');
+	expect(readme).toContain('restore_containment() {');
+	expect(readme).toContain('set_lifecycle true');
+	expect(readme).toContain('test "$POST_LIFECYCLE_STORAGE_STALE_HANDLE_RATE" = 0');
+	expect(readme).toContain('test "$POST_LIFECYCLE_APD_COUNT" = 0');
+	expect(readme.indexOf('test "$POST_LIFECYCLE_APD_COUNT" = 0')).toBeLessThan(
+		readme.indexOf('sudo systemctl enable --now synthetic-ui.timer')
+	);
 
 	const digest = `sha256:${'a'.repeat(64)}`;
 	const sourceSha = 'b'.repeat(40);
