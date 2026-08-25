@@ -123,7 +123,8 @@ npm run test:headed       # see the browser
 
 ### Digest-pinned updates
 
-Each `master` push uploads an `image-digest-synthetic-ui` artifact containing
+Each publishing workflow run (`master` push or manual dispatch) uploads an
+`image-digest-synthetic-ui` artifact containing
 `image-digest-synthetic-ui.tsv`. It has no header and exactly one tab-separated
 record with the stable schema `component`, `repository`, `digest`, `source_sha`:
 
@@ -179,6 +180,14 @@ NetBird or Caddy:
 ```bash
 set -euo pipefail
 
+validate_runtime() {
+  local actual_sha expected_sha
+  actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
+  expected_sha="$(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$2" |
+    sha256sum | awk '{print $1}')"
+  test "$actual_sha" = "$expected_sha"
+}
+
 SOURCE_SHA='<printed full source SHA>'
 IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<printed digest>'
 PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<operator-supplied current digest>'
@@ -199,8 +208,7 @@ PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
 if sudo test -f /opt/synthetic-ui/image.env; then
   INSTALL_MODE=pinned
   sudo test -f /opt/synthetic-ui/runtime.env
-  sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
-    /opt/synthetic-ui/runtime.env
+  validate_runtime /opt/synthetic-ui/runtime.env false
   CURRENT_IMAGE="$(sudo sed -n \
     's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
   [[ "$CURRENT_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
@@ -215,8 +223,7 @@ if sudo test -f /opt/synthetic-ui/image.env; then
 else
   INSTALL_MODE=first-migration
   if sudo test -f /opt/synthetic-ui/runtime.env; then
-    sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
-      /opt/synthetic-ui/runtime.env
+    validate_runtime /opt/synthetic-ui/runtime.env false
   fi
   LATEST_IMAGE_ID="$(sudo docker image inspect \
     ghcr.io/jmal1/selfservice-synthetic-ui:latest --format '{{.Id}}')"
@@ -283,15 +290,13 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
   config --images')"
 test "$RESOLVED_IMAGE" = "$IMAGE"
-sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
-  /opt/synthetic-ui/runtime.env
+validate_runtime /opt/synthetic-ui/runtime.env false
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
 test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
-sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
-  /opt/synthetic-ui/runtime.env
+validate_runtime /opt/synthetic-ui/runtime.env false
 sudo journalctl -u synthetic-ui.service -n 100 --no-pager
 
 TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
@@ -315,6 +320,14 @@ and keep the timer disabled:
 ```bash
 set -euo pipefail
 
+validate_runtime() {
+  local actual_sha expected_sha
+  actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
+  expected_sha="$(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$2" |
+    sha256sum | awk '{print $1}')"
+  test "$actual_sha" = "$expected_sha"
+}
+
 BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'
 sudo systemctl disable --now synthetic-ui.timer
 STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
@@ -325,7 +338,7 @@ done
 
 sudo test -f "$BACKUP/image.env"
 sudo test -f "$BACKUP/runtime.env"
-sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' "$BACKUP/runtime.env"
+validate_runtime "$BACKUP/runtime.env" false
 sudo test -f "$BACKUP/install-mode"
 INSTALL_MODE="$(sudo cat "$BACKUP/install-mode")"
 ROLLBACK_IMAGE="$(sudo sed -n 's/^SYNTHETIC_UI_IMAGE=//p' "$BACKUP/image.env")"
@@ -369,15 +382,13 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
   config --images')"
 test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"
-sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
-  /opt/synthetic-ui/runtime.env
+validate_runtime /opt/synthetic-ui/runtime.env false
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
 test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
-sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
-  /opt/synthetic-ui/runtime.env
+validate_runtime /opt/synthetic-ui/runtime.env false
 TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
 TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
 test "$TIMER_UNIT_STATE" = disabled
@@ -396,6 +407,14 @@ remain green. Any failure atomically restores lifecycle containment to `false`.
 ```bash
 set -euo pipefail
 
+validate_runtime() {
+  local actual_sha expected_sha
+  actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
+  expected_sha="$(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$2" |
+    sha256sum | awk '{print $1}')"
+  test "$actual_sha" = "$expected_sha"
+}
+
 STORAGE_STALE_HANDLE_RATE='<verified monitoring value>'
 APD_COUNT='<verified monitoring value>'
 UI_CHECKS='<verified pinned one-shot result>'
@@ -407,29 +426,42 @@ test -n "$OPERATOR_APPROVAL"
 test "$OPERATOR_APPROVAL" != '<approved change/ticket reference>'
 
 set_lifecycle() {
-  printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$1" |
-    sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null
-  sudo chmod 0644 /opt/synthetic-ui/runtime.env.new
+  if ! printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$1" |
+    sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null; then
+    return 1
+  fi
+  if ! sudo chmod 0644 /opt/synthetic-ui/runtime.env.new; then
+    return 1
+  fi
   sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
 }
 
 restore_containment() {
-  sudo systemctl disable --now synthetic-ui.timer
-  set_lifecycle false
+  local cleanup_failed=0
+  if ! sudo systemctl disable --now synthetic-ui.timer; then
+    echo 'Failed to disable synthetic-ui.timer during cleanup' >&2
+    cleanup_failed=1
+  fi
+  if ! set_lifecycle false; then
+    echo 'Failed to restore lifecycle=false during cleanup' >&2
+    cleanup_failed=1
+  fi
+  if [ "$cleanup_failed" -ne 0 ]; then
+    echo 'MANUAL INTERVENTION REQUIRED: verify timer and runtime containment' >&2
+    return 1
+  fi
 }
 
 test "$(systemctl show synthetic-ui.timer -p UnitFileState --value)" = disabled
 test "$(systemctl show synthetic-ui.timer -p ActiveState --value)" = inactive
-sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \
-  /opt/synthetic-ui/runtime.env
+validate_runtime /opt/synthetic-ui/runtime.env false
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
 test "$SERVICE_RESULT" = success
 test "$SERVICE_STATUS" = 0
 trap restore_containment ERR
 set_lifecycle true
-sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=true' \
-  /opt/synthetic-ui/runtime.env
+validate_runtime /opt/synthetic-ui/runtime.env true
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"

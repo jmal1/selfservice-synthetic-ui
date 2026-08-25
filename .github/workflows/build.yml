@@ -57,14 +57,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Write image digest manifest
-        if: github.event_name == 'push'
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           SOURCE_SHA: ${{ github.sha }}
         run: node scripts/write-image-digest-manifest.mjs image-digest-synthetic-ui.tsv
       - name: Upload image digest manifest
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: image-digest-synthetic-ui

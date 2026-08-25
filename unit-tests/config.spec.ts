@@ -95,6 +95,7 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const triggers = asRecord(workflow.on);
 	const push = asRecord(triggers.push);
 	expect(push.branches).toEqual(['master', 'main']);
+	expect(Object.prototype.hasOwnProperty.call(triggers, 'workflow_dispatch')).toBe(true);
 
 	const jobs = asRecord(workflow.jobs);
 	const buildJob = asRecord(jobs['build-and-push']);
@@ -114,7 +115,7 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	);
 	expect(build?.id).toBe('build');
 	expect(asRecord(build?.with).push).toBe(true);
-	expect(writeManifest?.if).toBe("github.event_name == 'push'");
+	expect(writeManifest?.if).toBeUndefined();
 	expect(writeManifest?.run).toBe(
 		'node scripts/write-image-digest-manifest.mjs image-digest-synthetic-ui.tsv'
 	);
@@ -122,7 +123,7 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 		IMAGE_DIGEST: '${{ steps.build.outputs.digest }}',
 		SOURCE_SHA: '${{ github.sha }}'
 	});
-	expect(uploadManifest?.if).toBe("github.event_name == 'push'");
+	expect(uploadManifest?.if).toBeUndefined();
 	expect(asRecord(uploadManifest?.with)).toMatchObject({
 		name: 'image-digest-synthetic-ui',
 		path: 'image-digest-synthetic-ui.tsv',
@@ -137,8 +138,9 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
 	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
 	expect(monitor.image).toBe(
-		'${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}'
+		'${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable repository@sha256 digest}'
 	);
+	expect(String(monitor.image)).not.toContain(':-');
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/runtime.env');
 	expect(service).not.toContain('EnvironmentFile=-/opt/synthetic-ui/runtime.env');
@@ -188,13 +190,22 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain(
 		'sudo install -m 0644 "$BACKUP/runtime.env" /opt/synthetic-ui/runtime.env.new'
 	);
-	expect(
-		readme.match(
-			/^\s*sudo grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false' \\$/gm
-		)
-	).toHaveLength(7);
+	expect(readme.match(/^validate_runtime\(\) \{$/gm)).toHaveLength(3);
+	expect(readme.match(/^\s*expected_sha="\$\(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\\n'/gm)).toHaveLength(
+		3
+	);
+	expect(readme).not.toContain("grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false'");
 	expect(readme).toContain('trap restore_containment ERR');
 	expect(readme).toContain('restore_containment() {');
+	const cleanupStart = readme.indexOf('restore_containment() {');
+	const cleanupEnd = readme.indexOf('\n}\n', cleanupStart);
+	const cleanup = readme.slice(cleanupStart, cleanupEnd);
+	expect(cleanup).toContain('if ! sudo systemctl disable --now synthetic-ui.timer; then');
+	expect(cleanup).toContain('if ! set_lifecycle false; then');
+	expect(cleanup).toContain('MANUAL INTERVENTION REQUIRED');
+	expect(cleanup.indexOf('if ! sudo systemctl disable')).toBeLessThan(
+		cleanup.indexOf('if ! set_lifecycle false')
+	);
 	expect(readme).toContain('set_lifecycle true');
 	expect(readme).toContain('test "$POST_LIFECYCLE_STORAGE_STALE_HANDLE_RATE" = 0');
 	expect(readme).toContain('test "$POST_LIFECYCLE_APD_COUNT" = 0');

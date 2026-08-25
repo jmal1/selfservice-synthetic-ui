@@ -8,7 +8,7 @@
 #   docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
 services:
   monitor:
-    image: "${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}"
+    image: "${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable repository@sha256 digest}"
     pull_policy: always
     env_file:
       - /opt/synthetic-ui/secrets/env
