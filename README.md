@@ -194,9 +194,10 @@ test -f "$SERVICE_STAGE"
 systemctl is-enabled --quiet synthetic-ui.timer
 systemctl is-active --quiet synthetic-ui.timer
 sudo systemctl stop synthetic-ui.timer
-while STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)" &&
-  [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
+STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
+while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
   sleep 5
+  STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
 done
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -260,9 +261,10 @@ BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'
 systemctl is-enabled --quiet synthetic-ui.timer
 systemctl is-active --quiet synthetic-ui.timer
 sudo systemctl stop synthetic-ui.timer
-while STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)" &&
-  [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
+STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
+while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
   sleep 5
+  STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
 done
 
 sudo test -f "$BACKUP/image.env"

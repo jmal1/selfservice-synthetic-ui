@@ -149,6 +149,12 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(2);
 	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(2);
 	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
+	expect(
+		readme.match(
+			/^\s*STATE="\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)"$/gm
+		)
+	).toHaveLength(4);
+	expect(readme).not.toContain('while STATE="$(systemctl show');
 
 	const digest = `sha256:${'a'.repeat(64)}`;
 	const sourceSha = 'b'.repeat(40);
