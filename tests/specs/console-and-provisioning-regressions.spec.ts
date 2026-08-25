@@ -36,11 +36,20 @@ async function installWmksTransportStub(page: Page): Promise<void> {
 						createWMKS(containerId) {
 							const callbacks = new Map();
 							const container = document.getElementById(containerId);
-							const canvas = document.createElement('canvas');
-							canvas.id = 'mainCanvas';
-							canvas.width = 800;
-							canvas.height = 600;
-							container.appendChild(canvas);
+							let generation = 0;
+							const mountCanvas = () => {
+								generation += 1;
+								const canvas = document.createElement('canvas');
+								canvas.id = 'mainCanvas';
+								canvas.width = 800;
+								canvas.height = 600;
+								canvas.dataset.wmksGeneration = String(generation);
+								container.replaceChildren(canvas);
+							};
+							window.__wmksStub = {
+								reconnect: mountCanvas
+							};
+							mountCanvas();
 
 							return {
 								register(event, callback) {
@@ -115,9 +124,9 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 	testInfo
 ) => {
 	meta(testInfo, {
-		title: 'Connected console canvas keeps browser keyboard focus',
+		title: 'Connected console capture target keeps browser keyboard focus',
 		description:
-			'Loads the real console UI with only the WMKS transport stubbed as connected, then proves the SDK-created canvas is focusable and receives physical Playwright keyboard events before and after using the Text Input toolbar. Paste and Text Input remain available. This intentionally stops at browser event delivery; the guest framebuffer requires the supervised live gate.',
+			'Loads the real console UI with only the WMKS transport stubbed as connected, then proves the persistent #console-canvas capture target receives physical Playwright keyboard events before and after the Text Input toolbar and after a nested-canvas reconnect. Paste and Text Input remain available. This intentionally stops at browser event delivery; the supervised live gate still owns guest-visible typing.',
 		severity: 'warning',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#runbook'
@@ -125,7 +134,7 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 	testInfo.annotations.push({
 		type: 'console-coverage-limit',
 		description:
-			'Automated coverage proves browser focus and keydown delivery to the WMKS canvas, not guest-visible characters. The supervised live gate must confirm physical typing appears in a connected guest framebuffer.'
+			'Automated coverage proves browser physical keys reach the WMKS capture target in #console-canvas, including after the SDK recreates its nested canvas. The supervised live gate must confirm physical typing appears in a connected guest framebuffer.'
 	});
 
 	await installWmksTransportStub(page);
@@ -157,18 +166,18 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 	await expect(pasteButton).toBeEnabled();
 	await expect(textInputButton).toBeVisible();
 	await expect(
-		canvas,
-		'connected WMKS canvas must be made programmatically focusable'
+		canvasContainer,
+		'connected WMKS capture target must be made programmatically focusable'
 	).toHaveAttribute('tabindex', '0');
 	await expect(
-		canvas,
-		'CONNECTED must autofocus the SDK-created canvas before any pointer interaction'
+		canvasContainer,
+		'CONNECTED must autofocus the persistent capture target before any pointer interaction'
 	).toBeFocused();
 
-	await canvas.evaluate((element) => {
-		(element as HTMLCanvasElement & { receivedKeys?: string[] }).receivedKeys = [];
+	await canvasContainer.evaluate((element) => {
+		(element as HTMLElement & { receivedKeys?: string[] }).receivedKeys = [];
 		element.addEventListener('keydown', (event) => {
-			(element as HTMLCanvasElement & { receivedKeys?: string[] }).receivedKeys?.push(
+			(element as HTMLElement & { receivedKeys?: string[] }).receivedKeys?.push(
 				(event as KeyboardEvent).code
 			);
 		});
@@ -177,9 +186,9 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 	await page.keyboard.press('KeyA');
 	await expect
 		.poll(() =>
-			canvas.evaluate(
+			canvasContainer.evaluate(
 				(element) =>
-					(element as HTMLCanvasElement & { receivedKeys?: string[] }).receivedKeys
+					(element as HTMLElement & { receivedKeys?: string[] }).receivedKeys
 			)
 		)
 		.toContain('KeyA');
@@ -193,18 +202,42 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 
 	await canvasContainer.click({ position: { x: 20, y: 20 } });
 	await expect(
-		canvas,
-		'console must reacquire focus after toolbar interaction'
+		canvasContainer,
+		'console must reacquire focus on the persistent capture target after toolbar interaction'
 	).toBeFocused();
 	await page.keyboard.press('KeyB');
 	await expect
 		.poll(() =>
-			canvas.evaluate(
+			canvasContainer.evaluate(
 				(element) =>
-					(element as HTMLCanvasElement & { receivedKeys?: string[] }).receivedKeys
+					(element as HTMLElement & { receivedKeys?: string[] }).receivedKeys
 			)
 		)
 		.toContain('KeyB');
+
+	await page.evaluate(() => {
+		const state = window as typeof window & {
+			__wmksStub?: {
+				reconnect: () => void;
+			};
+		};
+		state.__wmksStub?.reconnect();
+	});
+	await expect(
+		canvasContainer.locator('canvas'),
+		'WMKS reconnect must recreate the nested canvas while leaving the capture target in place'
+	).toHaveAttribute('data-wmks-generation', '2');
+	await canvasContainer.click({ position: { x: 20, y: 20 } });
+	await expect(canvasContainer).toBeFocused();
+	await page.keyboard.press('KeyC');
+	await expect
+		.poll(() =>
+			canvasContainer.evaluate(
+				(element) =>
+					(element as HTMLElement & { receivedKeys?: string[] }).receivedKeys
+			)
+		)
+		.toContain('KeyC');
 });
 
 test('known_enabled_provisioning_refresh_never_mounts_loading_banner', async (
