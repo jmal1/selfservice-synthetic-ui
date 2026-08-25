@@ -15,6 +15,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=optional
 
 COPY tsconfig.json playwright.config.ts ./
+COPY scripts/deployment-guardrails.mjs ./scripts/deployment-guardrails.mjs
 COPY tests/ ./tests/
 
 # Create the .auth state dir and writable test-results / report dirs,

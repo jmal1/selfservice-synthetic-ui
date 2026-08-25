@@ -111,8 +111,10 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(Object.prototype.hasOwnProperty.call(triggers, 'workflow_dispatch')).toBe(true);
 
 	const jobs = asRecord(workflow.jobs);
+	const testJob = asRecord(jobs.test);
 	const buildJob = asRecord(jobs['build-and-push']);
 	expect(buildJob.if).toBe("github.event_name == 'push' || github.event_name == 'workflow_dispatch'");
+	expect(testJob.steps).toContainEqual({ run: 'npm run test:ownership' });
 	if (!Array.isArray(buildJob.steps)) {
 		throw new Error('build-and-push.steps must be an array');
 	}
@@ -154,6 +156,8 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const monitor = asRecord(services.monitor);
 	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
 	const wrapper = readFileSync(join(process.cwd(), 'scripts/run-synthetic-ui.sh'), 'utf8');
+	const guardrails = readFileSync(join(process.cwd(), 'scripts/deployment-guardrails.mjs'), 'utf8');
+	const dockerfile = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8');
 	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
 	expect(monitor.image).toBe(
 		'${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable ghcr.io/jmal1/selfservice-synthetic-ui:<40-character lowercase commit SHA> tag}'
@@ -173,8 +177,13 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(wrapper).toContain(
 		'^ghcr\\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$'
 	);
+	expect(wrapper).toContain('/app/scripts/deployment-guardrails.mjs "$@"');
 	expect(wrapper).toContain('exit "$run_status"');
-	expect(wrapper).toContain('unexpected non-directory entry under');
+	expect(guardrails).toContain('unexpected non-directory entry under');
+	expect(guardrails).toContain('container report commands must run as pwuser UID 1001');
+	expect(dockerfile).toContain(
+		'COPY scripts/deployment-guardrails.mjs ./scripts/deployment-guardrails.mjs'
+	);
 	expect(asRecord(monitor.environment).SYNTHETIC_EXPECT_MAINTENANCE).toBe(
 		'${SYNTHETIC_EXPECT_MAINTENANCE:-false}'
 	);

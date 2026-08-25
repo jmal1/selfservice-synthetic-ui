@@ -15,8 +15,8 @@
  *   - Install mode: SHA tag → pinned upgrade vs immutable digest → first-migration retry
  *   - Digest retry: validate_runtime + docker image inspect + Compose resolve proofs
  *   - Invalid pin format: fail closed with exit 1
- *   - Host preflight: chown 1001 for report/results before canary run
- *   - Bash wrapper: missing/unwritable report root rejected before Docker
+ *   - Host preflight: recursively repair report/runs/results for UID 1001
+ *   - Bash wrapper: host UID writability is not confused with container UID access
  */
 import { test, expect } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
@@ -363,27 +363,47 @@ test('install mode fails closed with exit 1 on invalid pin format in image.env',
 // Report root ownership: runbook check
 // ---------------------------------------------------------------------------
 
-test('install runbook sets report and results ownership to UID 1001 before canary run', () => {
+test('install runbook initializes runs and recursively repairs report/results ownership before canary', () => {
 	const readme = loadReadme();
 	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
 	expect(block.length, 'expected to find the host install bash block').toBeGreaterThan(0);
 
-	// Find chown 1001 covering report and results.
-	const chownIdx = block.findIndex(
-		(l) => l.includes('chown') && l.includes('1001') && l.includes('report') && l.includes('results')
+	const installIdx = block.findIndex((l) => l.includes('sudo install -d -m 0755 -o 1001 -g 1001'));
+	const installCommand = block.slice(installIdx, installIdx + 2).join(' ');
+	expect(installIdx, 'install runbook must initialize bind-mount roots').toBeGreaterThanOrEqual(0);
+	expect(installCommand).toContain('/opt/synthetic-ui/report/runs');
+	expect(installCommand).toContain('/opt/synthetic-ui/results');
+
+	const chownIdx = block.findIndex((l) =>
+		l.includes('sudo chown -R --no-dereference 1001:1001')
 	);
+	const chownCommand = block.slice(chownIdx, chownIdx + 2).join(' ');
 	expect(
 		chownIdx,
-		'install runbook must chown report and results directories to UID 1001 (pwuser) before the canary'
+		'install runbook must recursively repair report and results trees for UID 1001'
 	).toBeGreaterThanOrEqual(0);
+	expect(chownCommand).toContain('/opt/synthetic-ui/report');
+	expect(chownCommand).toContain('/opt/synthetic-ui/results');
 
 	// The canary is sudo systemctl start synthetic-ui.service.
 	const canaryIdx = block.findIndex((l) => /sudo systemctl start synthetic-ui\.service/.test(l));
 	expect(canaryIdx, 'install runbook must start the canary service').toBeGreaterThanOrEqual(0);
 	expect(
 		chownIdx,
-		'chown 1001 for report/results must appear before the canary systemctl start'
+		'recursive ownership repair must appear before the canary systemctl start'
 	).toBeLessThan(canaryIdx);
+});
+
+test('one-time setup recursively assigns report and results trees to UID 1001', () => {
+	const block = extractBashBlock(loadReadme(), '/opt/synthetic-ui/{secrets,app,results,report/runs}');
+	expect(block.length, 'expected to find the one-time setup block').toBeGreaterThan(0);
+	const chownIdx = block.findIndex((line) =>
+		line.includes('sudo chown -R --no-dereference 1001:1001')
+	);
+	const command = block.slice(chownIdx, chownIdx + 2).join(' ');
+	expect(chownIdx).toBeGreaterThanOrEqual(0);
+	expect(command).toContain('/opt/synthetic-ui/report');
+	expect(command).toContain('/opt/synthetic-ui/results');
 });
 
 // ---------------------------------------------------------------------------
@@ -426,14 +446,14 @@ test('bash host wrapper rejects a missing report root before invoking Docker', (
 	expect(existsSync(logFile), 'Docker must not be invoked when report root is missing').toBe(false);
 });
 
-test('bash host wrapper rejects an unwritable report root before invoking Docker', () => {
+test('bash host wrapper delegates writability checks instead of testing as the host UID', () => {
 	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-unwritable-'));
 	const dockerDir = join(root, 'bin');
 	const logFile = join(root, 'docker.log');
 	const reportRoot = join(root, 'report');
 	mkdirSync(dockerDir, { recursive: true });
 	mkdirSync(reportRoot, { recursive: true });
-	// Remove write permission so validate_report_root fails on the writable check.
+	// The systemd host UID cannot write a correct UID 1001-owned 0755 root.
 	chmodSync(reportRoot, 0o555);
 
 	const fakeDocker = join(dockerDir, 'docker');
@@ -459,18 +479,10 @@ test('bash host wrapper rejects an unwritable report root before invoking Docker
 	// Restore so the tmp cleanup can remove the dir.
 	chmodSync(reportRoot, 0o755);
 
-	// On Windows/Git-Bash the permission model is limited; skip the assertion there.
-	// The test is load-bearing on Linux (production environment).
-	if (result.status !== 0) {
-		expect(result.stderr, 'wrapper must print a diagnostic for unwritable report root').toMatch(
-			/report root/i
-		);
-		expect(existsSync(logFile), 'Docker must not be invoked when report root is unwritable').toBe(
-			false
-		);
-	} else {
-		// Acceptable on Windows where chmod 0o555 does not prevent writes.
-			console.log('Skipping unwritable-root assertion: platform does not enforce write bits');
-		}
+	expect(result.status, result.stderr).toBe(0);
+	const dockerCalls = readFileSync(logFile, 'utf8').trim().split('\n');
+	expect(dockerCalls).toHaveLength(3);
+	expect(dockerCalls[0]).toContain('deployment-guardrails.mjs preflight');
+	expect(dockerCalls[1]).toContain('run --rm monitor');
+	expect(dockerCalls[2]).toContain('deployment-guardrails.mjs prune 3');
 });
-

@@ -60,12 +60,15 @@ The runner is published as a Docker image so netbirdv01 doesn't need
 Node.js, npm, or Chromium installed on the host.
 
 ```bash
-# Pull the credentials from Vault → /opt/synthetic-ui/secrets/env
+# Pull the credentials from Vault -> /opt/synthetic-ui/secrets/env
 sudo mkdir -p /opt/synthetic-ui/{secrets,app,results,report/runs}
 sudo chown -R jmal:jmal /opt/synthetic-ui
 # The container runs as pwuser (UID 1001 in the Playwright image); the bind-mount
-# source directories must be owned by that UID so the container can create sub-dirs.
-sudo chown 1001:1001 /opt/synthetic-ui/report /opt/synthetic-ui/results
+# trees, including legacy children, must be owned by that UID.
+sudo install -d -m 0755 -o 1001 -g 1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/report/runs /opt/synthetic-ui/results
+sudo chown -R --no-dereference 1001:1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/results
 
 # Edit /opt/synthetic-ui/secrets/env to set:
 #   SYNTHETIC_USERNAME=synthetic@lab.jmal.io
@@ -90,7 +93,8 @@ The production wrapper writes each HTML report to
 `/opt/synthetic-ui/report/runs/<run-id>` and keeps only the newest three runs,
 so failure evidence stays bounded without touching unrelated host files.
 The host launcher is a Bash wrapper; it validates the exact SHA-tagged image,
-runs Docker Compose, and prunes report history without requiring `/usr/bin/node`.
+runs Docker Compose, and asks the image-side Node guardrail to preflight and
+prune the bind mounts as `pwuser` without requiring `/usr/bin/node` on the host.
 
 Do **not** enable or start `synthetic-ui.timer` as part of this change. A safe
 manual run is appropriate only after the coordinated backend and UI
@@ -353,9 +357,11 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   config --images')"
 test "$RESOLVED_IMAGE" = "$IMAGE"
 validate_runtime /opt/synthetic-ui/runtime.env false
-# Ensure bind-mount sources are owned by the container user (pwuser UID 1001)
-# so the container can create report/results sub-directories on every run.
-sudo chown 1001:1001 /opt/synthetic-ui/report /opt/synthetic-ui/results
+# Initialize the bind-mount roots and repair legacy children as pwuser UID 1001.
+sudo install -d -m 0755 -o 1001 -g 1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/report/runs /opt/synthetic-ui/results
+sudo chown -R --no-dereference 1001:1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/results
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"

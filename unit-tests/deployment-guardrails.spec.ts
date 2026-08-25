@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync
 } from 'node:fs';
@@ -84,7 +85,34 @@ test('report retention fails visibly when the runs directory contains unexpected
 	expect(() => pruneReportRuns(root, 1)).toThrow('unexpected non-directory entry');
 });
 
-test('bash host wrapper keeps pruning and preserves the compose exit code', () => {
+test('report retention rejects a symlink without touching its target', async () => {
+	const { pruneReportRuns } = await loadGuardrails();
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-report-symlink-'));
+	const runsRoot = join(root, 'runs');
+	const outsideRoot = mkdtempSync(join(tmpdir(), 'synthetic-ui-report-outside-'));
+	const sentinel = join(outsideRoot, 'sentinel.txt');
+	mkdirSync(runsRoot, { recursive: true });
+	writeFileSync(sentinel, 'keep');
+	symlinkSync(outsideRoot, join(runsRoot, 'unexpected-link'), 'junction');
+
+	expect(() => pruneReportRuns(root, 1)).toThrow('unexpected non-directory entry');
+	expect(existsSync(sentinel)).toBe(true);
+	expect(existsSync(join(runsRoot, 'unexpected-link'))).toBe(true);
+});
+
+test('report storage preflight creates runs and proves report/results writes', async () => {
+	const { assertReportStorageWritable } = await loadGuardrails();
+	const reportRoot = mkdtempSync(join(tmpdir(), 'synthetic-ui-report-preflight-'));
+	const resultsRoot = mkdtempSync(join(tmpdir(), 'synthetic-ui-results-preflight-'));
+
+	const storage = assertReportStorageWritable(reportRoot, resultsRoot);
+	expect(storage.reportRoot).toBe(reportRoot);
+	expect(storage.resultsRoot).toBe(resultsRoot);
+	expect(storage.runsRoot).toBe(join(reportRoot, 'runs'));
+	expect(existsSync(storage.runsRoot)).toBe(true);
+});
+
+test('bash host wrapper delegates retention and preserves the compose exit code', () => {
 	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-wrapper-'));
 	const reportRoot = join(root, 'report');
 	const runsRoot = join(reportRoot, 'runs');
@@ -107,7 +135,10 @@ test('bash host wrapper keeps pruning and preserves the compose exit code', () =
 			'#!/usr/bin/env bash',
 			'set -euo pipefail',
 			'printf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"',
-			'exit "${FAKE_DOCKER_EXIT:-0}"'
+			'case "$*" in',
+			'  *"deployment-guardrails.mjs preflight"*|*"deployment-guardrails.mjs prune "*) exit 0 ;;',
+			'  *) exit "${FAKE_DOCKER_EXIT:-0}" ;;',
+			'esac'
 		].join('\n')
 	);
 	chmodSync(fakeDocker, 0o755);
@@ -132,11 +163,14 @@ test('bash host wrapper keeps pruning and preserves the compose exit code', () =
 	expect(existsSync(outsideFile)).toBe(true);
 	expect(existsSync(join(runsRoot, '20260825T143000Z-1004'))).toBe(true);
 	expect(existsSync(join(runsRoot, '20260825T142000Z-1003'))).toBe(true);
-	expect(existsSync(join(runsRoot, '20260825T141000Z-1002'))).toBe(false);
-	expect(existsSync(join(runsRoot, '20260825T140000Z-1001'))).toBe(false);
+	expect(existsSync(join(runsRoot, '20260825T141000Z-1002'))).toBe(true);
+	expect(existsSync(join(runsRoot, '20260825T140000Z-1001'))).toBe(true);
 	expect(result.stderr).not.toContain('report retention failed');
-	expect(readFileSync(logFile, 'utf8')).toContain('compose -f');
-	expect(readFileSync(logFile, 'utf8')).toContain('run --rm monitor');
+	const dockerCalls = readFileSync(logFile, 'utf8').trim().split('\n');
+	expect(dockerCalls).toHaveLength(3);
+	expect(dockerCalls[0]).toContain('deployment-guardrails.mjs preflight');
+	expect(dockerCalls[1]).toContain('run --rm monitor');
+	expect(dockerCalls[2]).toContain('deployment-guardrails.mjs prune 2');
 	expect(result.stderr).toBe('');
 	expect(result.stdout).toContain('report output folder');
 	expect(result.stdout).not.toContain('node');
