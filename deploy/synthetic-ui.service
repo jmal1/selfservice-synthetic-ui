@@ -9,11 +9,9 @@ Type=oneshot
 User=jmal
 Group=docker
 WorkingDirectory=/opt/synthetic-ui/app
-# Provisioning maintenance mode: safe browser checks continue, while the
-# create/destroy lifecycle check is not registered. Do not change these until
-# the coordinated API/UI rollout is complete and provisioning is approved.
+# Safe containment while provisioning remains enabled: run non-mutating checks.
 Environment=SYNTHETIC_LIFECYCLE_ENABLED=false
-Environment=SYNTHETIC_EXPECT_MAINTENANCE=true
+Environment=SYNTHETIC_EXPECT_MAINTENANCE=false
 # Non-secret, digest-pinned image selection. Fail closed if the pin is absent.
 EnvironmentFile=/opt/synthetic-ui/image.env
 # Persistent containment controls. This mandatory file overrides the defaults.

@@ -69,7 +69,7 @@ sudo chown -R jmal:jmal /opt/synthetic-ui
 #   SYNTHETIC_PASSWORD=<from vault: secret/synthetics/crucible/password>
 #   SYNTHETIC_BASE_URL=https://crucible.jmal.io
 #   SYNTHETIC_LIFECYCLE_ENABLED=false
-#   SYNTHETIC_EXPECT_MAINTENANCE=true
+#   SYNTHETIC_EXPECT_MAINTENANCE=false
 #   PUSHGATEWAY_URL=http://pushgateway.lab.jmal.io:9091
 #   PUSHGATEWAY_JOB=crucible_synthetic_ui
 sudo chmod 600 /opt/synthetic-ui/secrets/env
@@ -94,7 +94,7 @@ maintenance changes have deployed in this order:
    verify its banner and provisioning-control gates.
 3. Deploy this synthetic image with
    `SYNTHETIC_LIFECYCLE_ENABLED=false` and
-   `SYNTHETIC_EXPECT_MAINTENANCE=true`, then run the service manually.
+   `SYNTHETIC_EXPECT_MAINTENANCE=false`, then run the service manually.
 4. Re-enabling the production timer or provisioning is a separate,
    explicitly approved operation and is not part of this PR.
 
@@ -183,7 +183,8 @@ set -euo pipefail
 validate_runtime() {
   local actual_sha expected_sha
   actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
-  expected_sha="$(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$2" |
+  expected_sha="$(printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$2" |
     sha256sum | awk '{print $1}')"
   test "$actual_sha" = "$expected_sha"
 }
@@ -257,7 +258,7 @@ fi
 if sudo test -f /opt/synthetic-ui/runtime.env; then
   sudo cp -a /opt/synthetic-ui/runtime.env "$BACKUP/runtime.env"
 else
-  printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\n' |
+  printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' |
     sudo tee "$BACKUP/runtime.env" >/dev/null
   sudo chmod 0644 "$BACKUP/runtime.env"
 fi
@@ -278,7 +279,7 @@ printf 'SYNTHETIC_UI_IMAGE=%s\n' "$IMAGE" |
   sudo tee /opt/synthetic-ui/image.env.new >/dev/null
 sudo chmod 0644 /opt/synthetic-ui/image.env.new
 sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
-printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\n' |
+printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' |
   sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null
 sudo chmod 0644 /opt/synthetic-ui/runtime.env.new
 sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
@@ -323,7 +324,8 @@ set -euo pipefail
 validate_runtime() {
   local actual_sha expected_sha
   actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
-  expected_sha="$(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$2" |
+  expected_sha="$(printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$2" |
     sha256sum | awk '{print $1}')"
   test "$actual_sha" = "$expected_sha"
 }
@@ -410,7 +412,8 @@ set -euo pipefail
 validate_runtime() {
   local actual_sha expected_sha
   actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
-  expected_sha="$(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$2" |
+  expected_sha="$(printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$2" |
     sha256sum | awk '{print $1}')"
   test "$actual_sha" = "$expected_sha"
 }
@@ -426,7 +429,8 @@ test -n "$OPERATOR_APPROVAL"
 test "$OPERATOR_APPROVAL" != '<approved change/ticket reference>'
 
 set_lifecycle() {
-  if ! printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\n' "$1" |
+  if ! printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$1" |
     sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null; then
     return 1
   fi

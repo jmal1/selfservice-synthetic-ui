@@ -52,6 +52,19 @@ test('maintenance expectation requires lifecycle checks disabled', () => {
 	).toThrow('SYNTHETIC_EXPECT_MAINTENANCE=true requires SYNTHETIC_LIFECYCLE_ENABLED=false');
 });
 
+test('recovery enables lifecycle without expecting maintenance', () => {
+	expect(
+		loadSyntheticConfig({
+			SYNTHETIC_LIFECYCLE_ENABLED: 'true',
+			SYNTHETIC_EXPECT_MAINTENANCE: 'false',
+			SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop'
+		})
+	).toEqual({
+		lifecycleEnabled: true,
+		expectMaintenance: false
+	});
+});
+
 test('enabled lifecycle fails configuration when its template is missing', () => {
 	expect(() =>
 		loadSyntheticConfig({
@@ -144,6 +157,11 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/runtime.env');
 	expect(service).not.toContain('EnvironmentFile=-/opt/synthetic-ui/runtime.env');
+	expect(service).toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=false');
+	expect(service).not.toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=true');
+	expect(asRecord(monitor.environment).SYNTHETIC_EXPECT_MAINTENANCE).toBe(
+		'${SYNTHETIC_EXPECT_MAINTENANCE:-false}'
+	);
 	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(3);
 	expect(
 		readme.match(
@@ -191,10 +209,20 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 		'sudo install -m 0644 "$BACKUP/runtime.env" /opt/synthetic-ui/runtime.env.new'
 	);
 	expect(readme.match(/^validate_runtime\(\) \{$/gm)).toHaveLength(3);
-	expect(readme.match(/^\s*expected_sha="\$\(printf 'SYNTHETIC_LIFECYCLE_ENABLED=%s\\n'/gm)).toHaveLength(
-		3
-	);
+	expect(
+		readme.match(
+			/^\s*'SYNTHETIC_LIFECYCLE_ENABLED=%s\\nSYNTHETIC_EXPECT_MAINTENANCE=false\\n' "\$2" \|$/gm
+		)
+	).toHaveLength(3);
 	expect(readme).not.toContain("grep -qx 'SYNTHETIC_LIFECYCLE_ENABLED=false'");
+	expect(readme).toContain(
+		"'SYNTHETIC_LIFECYCLE_ENABLED=%s\\nSYNTHETIC_EXPECT_MAINTENANCE=false\\n' \"$1\" |"
+	);
+	expect(
+		readme.match(
+			/printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\\nSYNTHETIC_EXPECT_MAINTENANCE=false\\n' \|/g
+		)
+	).toHaveLength(2);
 	expect(readme).toContain('trap restore_containment ERR');
 	expect(readme).toContain('restore_containment() {');
 	const cleanupStart = readme.indexOf('restore_containment() {');
