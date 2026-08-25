@@ -135,10 +135,20 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const services = asRecord(compose.services);
 	const monitor = asRecord(services.monitor);
 	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
+	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
 	expect(monitor.image).toBe(
 		'${SYNTHETIC_UI_IMAGE:-ghcr.io/jmal1/selfservice-synthetic-ui:latest}'
 	);
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
+	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(2);
+	expect(
+		readme.match(
+			/^SERVICE_RESULT="\$\(systemctl show synthetic-ui\.service -p Result --value\)"$/gm
+		)
+	).toHaveLength(2);
+	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(2);
+	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(2);
+	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
 
 	const digest = `sha256:${'a'.repeat(64)}`;
 	const sourceSha = 'b'.repeat(40);

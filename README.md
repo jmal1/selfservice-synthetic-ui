@@ -176,14 +176,23 @@ the synthetic timer so it cannot race the file replacement; it waits for any
 active oneshot run to finish and does not restart NetBird or Caddy:
 
 ```bash
+set -euo pipefail
+
 SOURCE_SHA='<printed full source SHA>'
 IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<printed digest>'
 COMPOSE_SHA256='<printed lowercase hash>'
 SERVICE_SHA256='<printed lowercase hash>'
+[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+[[ "$IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+[[ "$COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$SERVICE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 COMPOSE_STAGE="/tmp/docker-compose.$SOURCE_SHA.yml"
 SERVICE_STAGE="/tmp/synthetic-ui.$SOURCE_SHA.service"
+test -f "$COMPOSE_STAGE"
+test -f "$SERVICE_STAGE"
 
-TIMER_WAS_ACTIVE="$(systemctl is-active synthetic-ui.timer || true)"
+systemctl is-enabled --quiet synthetic-ui.timer
+systemctl is-active --quiet synthetic-ui.timer
 sudo systemctl stop synthetic-ui.timer
 while STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)" &&
   [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
@@ -222,14 +231,15 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   config --images')"
 test "$RESOLVED_IMAGE" = "$IMAGE"
 sudo systemctl start synthetic-ui.service
-sudo systemctl show synthetic-ui.service -p Result -p ExecMainStatus
+SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+test "$SERVICE_RESULT" = success
+test "$SERVICE_STATUS" = 0
 sudo journalctl -u synthetic-ui.service -n 100 --no-pager
 
-if [ "$TIMER_WAS_ACTIVE" = active ]; then
-  sudo systemctl start synthetic-ui.timer
-fi
-sudo systemctl is-enabled synthetic-ui.timer
-sudo systemctl is-active synthetic-ui.timer
+sudo systemctl start synthetic-ui.timer
+systemctl is-enabled --quiet synthetic-ui.timer
+systemctl is-active --quiet synthetic-ui.timer
 sudo systemctl list-timers synthetic-ui.timer --no-pager
 sudo rm -f "$COMPOSE_STAGE" "$SERVICE_STAGE"
 ```
@@ -244,11 +254,23 @@ and service files have the immutable-pin contract; otherwise leave the timer
 stopped because the pre-migration backup is mutable-tag-only:
 
 ```bash
+set -euo pipefail
+
 BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'
+systemctl is-enabled --quiet synthetic-ui.timer
+systemctl is-active --quiet synthetic-ui.timer
+sudo systemctl stop synthetic-ui.timer
+while STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)" &&
+  [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
+  sleep 5
+done
+
 sudo test -f "$BACKUP/image.env"
 sudo grep -F 'SYNTHETIC_UI_IMAGE' "$BACKUP/docker-compose.yml"
 sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
   "$BACKUP/synthetic-ui.service"
+ROLLBACK_IMAGE="$(sudo sed -n 's/^SYNTHETIC_UI_IMAGE=//p' "$BACKUP/image.env")"
+[[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
 sudo install -m 0644 "$BACKUP/docker-compose.yml" \
   /opt/synthetic-ui/app/deploy/docker-compose.yml.new
 sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
@@ -260,11 +282,18 @@ sudo mv /etc/systemd/system/synthetic-ui.service.new \
 sudo install -m 0644 "$BACKUP/image.env" /opt/synthetic-ui/image.env.new
 sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
 sudo systemctl daemon-reload
-sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
-  -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images'
+RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
+  exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
+  config --images')"
+test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"
 sudo systemctl start synthetic-ui.service
+SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+test "$SERVICE_RESULT" = success
+test "$SERVICE_STATUS" = 0
 sudo systemctl start synthetic-ui.timer
-sudo systemctl is-active synthetic-ui.timer
+systemctl is-enabled --quiet synthetic-ui.timer
+systemctl is-active --quiet synthetic-ui.timer
 ```
 
 ## Metrics
