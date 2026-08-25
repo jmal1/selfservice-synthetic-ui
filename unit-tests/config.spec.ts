@@ -153,8 +153,10 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(push.branches).toEqual(['master', 'main']);
 	expect(Object.prototype.hasOwnProperty.call(triggers, 'workflow_dispatch')).toBe(true);
 	expect(concurrency.group).toBe(
-		'${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}'
+		'${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}'
 	);
+	expect(concurrency.group).not.toContain('github.ref');
+	expect(concurrency.group).toContain('github.run_id');
 	expect(concurrency['cancel-in-progress']).toBe(true);
 
 	const jobs = asRecord(workflow.jobs);
