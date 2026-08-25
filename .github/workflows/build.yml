@@ -56,6 +56,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Assert commit SHA tag was published
+        shell: bash
+        run: docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ github.sha }} >/dev/null
       - name: Write image digest manifest
         shell: bash
         env:

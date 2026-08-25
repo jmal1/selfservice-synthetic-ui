@@ -119,6 +119,7 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const steps = buildJob.steps.map(asRecord);
 	const metadata = steps.find((step) => step.uses === 'docker/metadata-action@v5');
 	const build = steps.find((step) => step.uses === 'docker/build-push-action@v5');
+	const publishShaTag = steps.find((step) => step.name === 'Assert commit SHA tag was published');
 	const writeManifest = steps.find((step) => step.name === 'Write image digest manifest');
 	const uploadManifest = steps.find((step) => step.uses === 'actions/upload-artifact@v4');
 
@@ -128,6 +129,9 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	);
 	expect(build?.id).toBe('build');
 	expect(asRecord(build?.with).push).toBe(true);
+	expect(publishShaTag?.run).toBe(
+		'docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ github.sha }} >/dev/null'
+	);
 	expect(writeManifest?.if).toBeUndefined();
 	expect(writeManifest?.run).toBe(
 		'node scripts/write-image-digest-manifest.mjs image-digest-synthetic-ui.tsv'
@@ -149,18 +153,33 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const services = asRecord(compose.services);
 	const monitor = asRecord(services.monitor);
 	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
+	const wrapper = readFileSync(join(process.cwd(), 'scripts/run-synthetic-ui.sh'), 'utf8');
 	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
 	expect(monitor.image).toBe(
-		'${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable repository@sha256 digest}'
+		'${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable ghcr.io/jmal1/selfservice-synthetic-ui:<40-character lowercase commit SHA> tag}'
 	);
-	expect(String(monitor.image)).not.toContain(':-');
+	expect(String(monitor.image)).not.toContain(':latest');
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/image.env');
 	expect(service).toContain('EnvironmentFile=/opt/synthetic-ui/runtime.env');
 	expect(service).not.toContain('EnvironmentFile=-/opt/synthetic-ui/runtime.env');
 	expect(service).toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=false');
 	expect(service).not.toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=true');
+	expect(service).toContain('Environment=SYNTHETIC_REPORT_ROOT=/opt/synthetic-ui/report');
+	expect(service).toContain('Environment=SYNTHETIC_REPORT_KEEP_RUNS=3');
+	expect(service).toContain('ExecStart=/usr/bin/bash /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh');
+	expect(service).not.toContain('/usr/bin/node');
+	expect(wrapper).toContain('set -euo pipefail');
+	expect(wrapper).toContain('docker compose -f "$compose_file" run --rm monitor');
+	expect(wrapper).toContain(
+		'^ghcr\\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$'
+	);
+	expect(wrapper).toContain('exit "$run_status"');
+	expect(wrapper).toContain('unexpected non-directory entry under');
 	expect(asRecord(monitor.environment).SYNTHETIC_EXPECT_MAINTENANCE).toBe(
 		'${SYNTHETIC_EXPECT_MAINTENANCE:-false}'
+	);
+	expect(asRecord(monitor.environment).PLAYWRIGHT_REPORT_RUN_ID).toBe(
+		'${PLAYWRIGHT_REPORT_RUN_ID:-latest}'
 	);
 	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(3);
 	expect(
@@ -185,16 +204,21 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain('test "$STORAGE_STALE_HANDLE_RATE" = 0');
 	expect(readme).toContain('test "$APD_COUNT" = 0');
 	expect(readme).toContain('test "$UI_CHECKS" = green');
+	expect(readme).toContain('the deploy contract uses that full SHA reference');
 	expect(readme).toContain(
-		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]'
+		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]'
 	);
+	expect(readme).toContain('/opt/synthetic-ui/report/runs/<run-id>');
+	expect(readme).toContain('keeps only the newest three runs');
+	expect(readme).toContain('The host launcher is a Bash wrapper');
+	expect(readme).toContain('without requiring `/usr/bin/node`');
+	expect(readme).toContain('/opt/synthetic-ui/report/runs/');
 	expect(readme).toContain('if sudo test -f /opt/synthetic-ui/image.env; then');
 	expect(readme).toContain('INSTALL_MODE=pinned');
 	expect(readme).toContain('INSTALL_MODE=first-migration');
 	expect(readme).toContain('test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"');
 	expect(readme).toContain('test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"');
 	expect(readme).toContain('test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"');
-	expect(readme).toContain('test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"');
 	expect(readme).toContain('sudo tee "$BACKUP/image.env" >/dev/null');
 	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/source.sha "$BACKUP/source.sha"');
 	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/runtime.env "$BACKUP/runtime.env"');

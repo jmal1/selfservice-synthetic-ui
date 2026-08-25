@@ -22,7 +22,13 @@ export default defineConfig({
 	workers: 1,
 	reporter: [
 		['list'],
-		['html', { open: 'never', outputFolder: 'playwright-report' }],
+		[
+			'html',
+			{
+				open: 'never',
+				outputFolder: `./playwright-report/runs/${process.env.PLAYWRIGHT_REPORT_RUN_ID ?? 'latest'}`
+			}
+		],
 		['./tests/lib/pushgateway-reporter.ts']
 	],
 	use: {

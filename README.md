@@ -61,7 +61,7 @@ Node.js, npm, or Chromium installed on the host.
 
 ```bash
 # Pull the credentials from Vault → /opt/synthetic-ui/secrets/env
-sudo mkdir -p /opt/synthetic-ui/{secrets,app,results,report}
+sudo mkdir -p /opt/synthetic-ui/{secrets,app,results,report/runs}
 sudo chown -R jmal:jmal /opt/synthetic-ui
 
 # Edit /opt/synthetic-ui/secrets/env to set:
@@ -82,6 +82,12 @@ sudo systemctl disable --now synthetic-ui.timer
 sudo cp /opt/synthetic-ui/app/deploy/synthetic-ui.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
+
+The production wrapper writes each HTML report to
+`/opt/synthetic-ui/report/runs/<run-id>` and keeps only the newest three runs,
+so failure evidence stays bounded without touching unrelated host files.
+The host launcher is a Bash wrapper; it validates the exact SHA-tagged image,
+runs Docker Compose, and prunes report history without requiring `/usr/bin/node`.
 
 Do **not** enable or start `synthetic-ui.timer` as part of this change. A safe
 manual run is appropriate only after the coordinated backend and UI
@@ -154,6 +160,10 @@ if ($Fields.Count -ne 4 -or $Fields[0] -ne 'synthetic-ui' -or
     $Fields[3] -ne $SourceSha) { throw 'manifest fields do not match the approved run' }
 if ($Fields[2] -notmatch '^sha256:[0-9a-f]{64}$') { throw 'invalid image digest' }
 
+# The CI workflow publishes the exact
+# `ghcr.io/jmal1/selfservice-synthetic-ui:$SourceSha` tag alongside the digest,
+# and the deploy contract uses that full SHA reference.
+
 $Compose = Join-Path $Work 'deploy\docker-compose.yml'
 $Service = Join-Path $Work 'deploy\synthetic-ui.service'
 $ComposeHash = (Get-FileHash -Algorithm SHA256 $Compose).Hash.ToLower()
@@ -190,13 +200,13 @@ validate_runtime() {
 }
 
 SOURCE_SHA='<printed full source SHA>'
-IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<printed digest>'
-PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<operator-supplied current digest>'
+IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui:<printed full source SHA>'
+PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui:<operator-supplied current full source SHA>'
 COMPOSE_SHA256='<printed lowercase hash>'
 SERVICE_SHA256='<printed lowercase hash>'
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-[[ "$IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
-[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+[[ "$IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
+[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
 [[ "$COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$SERVICE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 COMPOSE_STAGE="/tmp/docker-compose.$SOURCE_SHA.yml"
@@ -207,28 +217,25 @@ test -f "$SERVICE_STAGE"
 PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
   "$PREVIOUS_IMAGE" --format '{{.Id}}')"
 if sudo test -f /opt/synthetic-ui/image.env; then
-  INSTALL_MODE=pinned
-  sudo test -f /opt/synthetic-ui/runtime.env
-  validate_runtime /opt/synthetic-ui/runtime.env false
-  CURRENT_IMAGE="$(sudo sed -n \
-    's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
-  [[ "$CURRENT_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
-  test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"
-  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
-    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
-    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
-  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
-  CURRENT_IMAGE_ID="$(sudo docker image inspect \
-    "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
-  test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
+INSTALL_MODE=pinned
+sudo test -f /opt/synthetic-ui/runtime.env
+validate_runtime /opt/synthetic-ui/runtime.env false
+CURRENT_IMAGE="$(sudo sed -n \
+  's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
+[[ "$CURRENT_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
+test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"
+CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+  'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+  -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+CURRENT_IMAGE_ID="$(sudo docker image inspect \
+  "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
+test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
 else
-  INSTALL_MODE=first-migration
-  if sudo test -f /opt/synthetic-ui/runtime.env; then
-    validate_runtime /opt/synthetic-ui/runtime.env false
-  fi
-  LATEST_IMAGE_ID="$(sudo docker image inspect \
-    ghcr.io/jmal1/selfservice-synthetic-ui:latest --format '{{.Id}}')"
-  test "$PREVIOUS_IMAGE_ID" = "$LATEST_IMAGE_ID"
+INSTALL_MODE=first-migration
+if sudo test -f /opt/synthetic-ui/runtime.env; then
+  validate_runtime /opt/synthetic-ui/runtime.env false
+fi
 fi
 
 sudo systemctl disable --now synthetic-ui.timer
@@ -310,13 +317,13 @@ sudo rm -f "$COMPOSE_STAGE" "$SERVICE_STAGE"
 
 Compose still reads `/opt/synthetic-ui/secrets/env`; the image pin contains no
 credential. The mandatory `EnvironmentFile` makes scheduled runs fail closed
-rather than fall back to `latest`.
+rather than accept a mutable tag or an empty pin.
 
 Rollback reads the backup's recorded install mode. A first-migration backup is
-**image-only** because its old Compose and unit use `latest`; a pinned-upgrade
-backup restores only after verifying its immutable Compose, unit, pin, and
-source identity. Both modes prove the exact resolved image, run one validation,
-and keep the timer disabled:
+**image-only** because its old Compose and unit used an unpinned image
+reference; a pinned-upgrade backup restores only after verifying its immutable
+Compose, unit, pin, and source identity. Both modes prove the exact resolved
+image, run one validation, and keep the timer disabled:
 
 ```bash
 set -euo pipefail
@@ -344,7 +351,7 @@ validate_runtime "$BACKUP/runtime.env" false
 sudo test -f "$BACKUP/install-mode"
 INSTALL_MODE="$(sudo cat "$BACKUP/install-mode")"
 ROLLBACK_IMAGE="$(sudo sed -n 's/^SYNTHETIC_UI_IMAGE=//p' "$BACKUP/image.env")"
-[[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+[[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
 
 if [ "$INSTALL_MODE" = first-migration ]; then
   # Retain the newly installed immutable files; restore only the prior pin.
@@ -577,14 +584,14 @@ Most likely:
 3. **UI bundle** — check `kubectl get pod -n selfservice -l app=selfservice-ui`.
 4. The synthetic suite saves screenshots on failure to
    `/opt/synthetic-ui/app/test-results/`. SSH in and inspect the
-   most recent run.
+   newest report run under `/opt/synthetic-ui/report/runs/`.
 
 ### "How do I add a new check"
 
 1. Create `tests/specs/<name>.spec.ts` modeled on an existing spec.
 2. Use the `withMetric` fixture from `tests/fixtures.ts` so it
    automatically pushes the duration/success metrics on completion.
-3. Merge to `master`, then use the approved digest-pinned deployment procedure
+3. Merge to `master`, then use the approved full-SHA-tag deployment procedure
    above. netbirdv01 does not contain a Git checkout or auto-update from Git.
 4. Add a Grafana panel for the new metric if it warrants its own
    widget (otherwise it rolls up into the default sum dashboard).

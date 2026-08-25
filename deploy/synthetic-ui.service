@@ -12,13 +12,17 @@ WorkingDirectory=/opt/synthetic-ui/app
 # Safe containment while provisioning remains enabled: run non-mutating checks.
 Environment=SYNTHETIC_LIFECYCLE_ENABLED=false
 Environment=SYNTHETIC_EXPECT_MAINTENANCE=false
-# Non-secret, digest-pinned image selection. Fail closed if the pin is absent.
+# Host-side report retention: keep the newest few run directories, never the
+# entire history.
+Environment=SYNTHETIC_REPORT_ROOT=/opt/synthetic-ui/report
+Environment=SYNTHETIC_REPORT_KEEP_RUNS=3
+# Non-secret, exact SHA-tagged image selection. Fail closed if the pin is absent.
 EnvironmentFile=/opt/synthetic-ui/image.env
 # Persistent containment controls. This mandatory file overrides the defaults.
 EnvironmentFile=/opt/synthetic-ui/runtime.env
 # Pull the pinned image (small layer diff once cached) then run once.
 ExecStartPre=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull --quiet
-ExecStart=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
+ExecStart=/usr/bin/bash /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh
 StandardOutput=journal
 StandardError=journal
 # Each run should complete in ~3 min; kill after 15 to avoid runaway.
