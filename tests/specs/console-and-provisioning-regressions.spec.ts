@@ -160,6 +160,10 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 		canvas,
 		'connected WMKS canvas must be made programmatically focusable'
 	).toHaveAttribute('tabindex', '0');
+	await expect(
+		canvas,
+		'CONNECTED must autofocus the SDK-created canvas before any pointer interaction'
+	).toBeFocused();
 
 	await canvas.evaluate((element) => {
 		(element as HTMLCanvasElement & { receivedKeys?: string[] }).receivedKeys = [];
@@ -170,11 +174,6 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 		});
 	});
 
-	await canvasContainer.click({ position: { x: 20, y: 20 } });
-	await expect(
-		canvas,
-		'clicking the console surface must focus the SDK-created canvas'
-	).toBeFocused();
 	await page.keyboard.press('KeyA');
 	await expect
 		.poll(() =>
