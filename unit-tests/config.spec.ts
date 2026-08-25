@@ -67,7 +67,7 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 			SYNTHETIC_ADMIN_USERNAME: 'admin',
 			SYNTHETIC_ADMIN_PASSWORD: 'secret'
 		})
-	).toBe(19);
+	).toBe(21);
 	expect(
 		expectedFullSuiteCheckCount({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
@@ -75,11 +75,11 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 			SYNTHETIC_ADMIN_USERNAME: 'admin',
 			SYNTHETIC_ADMIN_PASSWORD: 'secret'
 		})
-	).toBe(19);
+	).toBe(21);
 	expect(
 		expectedFullSuiteCheckCount({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
 			SYNTHETIC_EXPECT_MAINTENANCE: 'false'
 		})
-	).toBe(14);
+	).toBe(16);
 });
