@@ -205,6 +205,13 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain('test "$APD_COUNT" = 0');
 	expect(readme).toContain('test "$UI_CHECKS" = green');
 	expect(readme).toContain('the deploy contract uses that full SHA reference');
+	expect(readme).toContain('$Wrapper = Join-Path $Work \'scripts\\run-synthetic-ui.sh\'');
+	expect(readme).toContain('$WrapperHash = (Get-FileHash -Algorithm SHA256 $Wrapper).Hash.ToLower()');
+	expect(readme).toContain('$WRAPPER_STAGE = "/tmp/run-synthetic-ui.$SourceSha.sh"');
+	expect(readme).toContain('test -f "$WRAPPER_STAGE"');
+	expect(readme).toContain('$Image = "$($Fields[1]):$SourceSha"');
+	expect(readme).toContain('scp $Wrapper "jmal@192.168.68.95:$WRAPPER_STAGE"');
+	expect(readme).toContain('"WRAPPER_SHA256=$WrapperHash"');
 	expect(readme).toContain(
 		'[[ "$PREVIOUS_IMAGE" =~ ^ghcr\\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]'
 	);
@@ -219,6 +226,12 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain('test "$PREVIOUS_IMAGE" = "$CURRENT_IMAGE"');
 	expect(readme).toContain('test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"');
 	expect(readme).toContain('test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"');
+	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh "$BACKUP/run-synthetic-ui.sh"');
+	expect(readme).toContain('sudo install -m 0755 "$WRAPPER_STAGE" "$BACKUP/run-synthetic-ui.sh"');
+	expect(readme).toContain('sudo test -f "$BACKUP/run-synthetic-ui.sh"');
+	expect(readme).toContain('sudo install -m 0755 "$WRAPPER_STAGE"');
+	expect(readme).toContain('sudo install -m 0755 "$BACKUP/run-synthetic-ui.sh"');
+	expect(readme).toContain('sudo mv /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
 	expect(readme).toContain('sudo tee "$BACKUP/image.env" >/dev/null');
 	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/source.sha "$BACKUP/source.sha"');
 	expect(readme).toContain('sudo cp -a /opt/synthetic-ui/runtime.env "$BACKUP/runtime.env"');
