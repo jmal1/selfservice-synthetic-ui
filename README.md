@@ -430,7 +430,12 @@ if [ "$INSTALL_MODE" = first-migration ]; then
     /etc/systemd/system/synthetic-ui.service
 elif [ "$INSTALL_MODE" = pinned ]; then
   [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
-  sudo docker image inspect "$ROLLBACK_IMAGE" --format '{{.Id}}' >/dev/null
+  sudo test -f "$BACKUP/previous-image-id"
+  ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"
+  [[ "$ROLLBACK_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+  LOCAL_ROLLBACK_IMAGE_ID="$(sudo docker image inspect \
+    "$ROLLBACK_IMAGE" --format '{{.Id}}')"
+  test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
   sudo test -f "$BACKUP/source.sha"
   ROLLBACK_SOURCE_SHA="$(sudo cat "$BACKUP/source.sha")"
   [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -467,6 +472,11 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
   config --images')"
 test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"
+if [ "$INSTALL_MODE" = pinned ]; then
+  RESOLVED_IMAGE_ID="$(sudo docker image inspect \
+    "$RESOLVED_IMAGE" --format '{{.Id}}')"
+  test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+fi
 validate_runtime /opt/synthetic-ui/runtime.env false
 TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
 TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"

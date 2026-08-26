@@ -255,6 +255,9 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(3);
 	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(3);
 	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
+	expect(readme).toContain('ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"');
+	expect(readme).toContain('test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"');
+	expect(readme).toContain('test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"');
 	expect(
 		readme.match(
 			/^\s*STATE="\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)"$/gm

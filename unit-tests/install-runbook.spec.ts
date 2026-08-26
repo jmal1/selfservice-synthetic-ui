@@ -115,6 +115,35 @@ function assertPinnedRollbackContainment(rollback: string): void {
 	}
 }
 
+function assertPinnedRollbackImageProvenance(rollback: string): void {
+	const requiredProofs = [
+		'sudo test -f "$BACKUP/previous-image-id"',
+		'ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"',
+		'[[ "$ROLLBACK_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]',
+		'test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"',
+		'test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"'
+	];
+	for (const proof of requiredProofs) {
+		if (!rollback.includes(proof)) {
+			throw new Error(`pinned rollback image provenance proof is missing: ${proof}`);
+		}
+	}
+	if (
+		!rollback.match(
+			/LOCAL_ROLLBACK_IMAGE_ID="\$\(sudo docker image inspect \\\r?\n\s+"\$ROLLBACK_IMAGE" --format '\{\{\.Id\}\}'\)"/
+		)
+	) {
+		throw new Error('pinned rollback must inspect the tagged image before restore');
+	}
+	if (
+		!rollback.match(
+			/RESOLVED_IMAGE_ID="\$\(sudo docker image inspect \\\r?\n\s+"\$RESOLVED_IMAGE" --format '\{\{\.Id\}\}'\)"/
+		)
+	) {
+		throw new Error('pinned rollback must inspect the Compose-resolved image');
+	}
+}
+
 test('install runbook creates /opt/synthetic-ui/app/scripts before installing the wrapper', () => {
 	const readme = loadReadme();
 	// Find the bash block that contains the wrapper install step.
@@ -438,6 +467,7 @@ test('pinned rollback restores prior state but validates through one contained d
 	expect(syntax.status, syntax.stderr).toBe(0);
 	const rollback = block.join('\n');
 	assertPinnedRollbackContainment(rollback);
+	assertPinnedRollbackImageProvenance(rollback);
 	const pinnedStart = block
 		.map((line, index) => ({ line, index }))
 		.filter(({ line }) => line.trim() === 'if [ "$INSTALL_MODE" = pinned ]; then')
@@ -470,6 +500,21 @@ test('pinned rollback restores prior state but validates through one contained d
 	const resolvedProofIdx = block.findIndex((line) =>
 		line.includes('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"')
 	);
+	const backupImageIdIdx = block.findIndex((line) =>
+		line.includes('sudo test -f "$BACKUP/previous-image-id"')
+	);
+	const recordedImageIdIdx = block.findIndex((line) =>
+		line.includes('ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"')
+	);
+	const recordedImageIdFormatIdx = block.findIndex((line) =>
+		line.includes('[[ "$ROLLBACK_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]')
+	);
+	const localImageIdProofIdx = block.findIndex((line) =>
+		line.includes('test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"')
+	);
+	const resolvedImageIdProofIdx = block.findIndex((line) =>
+		line.includes('test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"')
+	);
 	const runtimeProofIdx = block.findIndex((line) =>
 		line.includes('validate_runtime /opt/synthetic-ui/runtime.env false')
 	);
@@ -484,6 +529,11 @@ test('pinned rollback restores prior state but validates through one contained d
 		imageRestoreIdx,
 		runtimeRestoreIdx,
 		resolvedProofIdx,
+		backupImageIdIdx,
+		recordedImageIdIdx,
+		recordedImageIdFormatIdx,
+		localImageIdProofIdx,
+		resolvedImageIdProofIdx,
 		runtimeProofIdx
 	]) {
 		expect(prerequisite).toBeGreaterThanOrEqual(0);
@@ -491,6 +541,12 @@ test('pinned rollback restores prior state but validates through one contained d
 			directRunIdx
 		);
 	}
+	expect(localImageIdProofIdx, 'local tag identity must be proven before file restore').toBeLessThan(
+		composeRestoreIdx
+	);
+	expect(resolvedProofIdx, 'Compose reference equality must precede resolved ID proof').toBeLessThan(
+		resolvedImageIdProofIdx
+	);
 
 	expect(
 		block.filter((line) => line.includes('run --rm --no-deps --pull never monitor'))
@@ -554,6 +610,37 @@ test('rollback contract rejects legacy starts and missing report/containment ass
 				.replaceAll(serviceCheck, 'true')
 		)
 	).toThrow(/timer containment|service containment/);
+});
+
+test('rollback provenance contract rejects omitted and mismatched image ID proofs', () => {
+	const rollback = extractBashBlock(
+		loadReadme(),
+		"BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'"
+	).join('\n');
+	const localProof = 'test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"';
+	const resolvedProof = 'test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"';
+
+	expect(() =>
+		assertPinnedRollbackImageProvenance(
+			rollback.replace('sudo test -f "$BACKUP/previous-image-id"', 'true')
+		)
+	).toThrow('image provenance proof is missing');
+	expect(() =>
+		assertPinnedRollbackImageProvenance(rollback.replace(resolvedProof, 'true'))
+	).toThrow('image provenance proof is missing');
+	expect(() =>
+		assertPinnedRollbackImageProvenance(
+			rollback.replace(localProof, 'test "$LOCAL_ROLLBACK_IMAGE_ID" != "$ROLLBACK_IMAGE_ID"')
+		)
+	).toThrow('image provenance proof is missing');
+	expect(() =>
+		assertPinnedRollbackImageProvenance(
+			rollback.replace(
+				resolvedProof,
+				'test "$RESOLVED_IMAGE_ID" = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"'
+			)
+		)
+	).toThrow('image provenance proof is missing');
 });
 
 test('rollback documentation warns that ownership rollback is forward-only containment', () => {
