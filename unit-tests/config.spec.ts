@@ -97,9 +97,51 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 	expect(
 		expectedFullSuiteCheckCount({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
+			SYNTHETIC_EXPECT_MAINTENANCE: 'false',
+			SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop',
+			SYNTHETIC_ADMIN_USERNAME: 'admin',
+			SYNTHETIC_ADMIN_PASSWORD: 'secret'
+		})
+	).toBe(20);
+	expect(
+		expectedFullSuiteCheckCount({
+			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
 			SYNTHETIC_EXPECT_MAINTENANCE: 'false'
 		})
 	).toBe(16);
+});
+
+test('README configured check-count table matches computed production configurations', () => {
+	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+	const documentedRows = [
+		...readme.matchAll(/^\| `(true|false)`\s+\| `(true|false)`\s+\| (\d+)\s+\|$/gm)
+	].map((match) => ({
+		lifecycle: match[1],
+		maintenance: match[2],
+		count: Number(match[3])
+	}));
+	const credentials = {
+		SYNTHETIC_TEMPLATE_NAME: 'synthetic-noop',
+		SYNTHETIC_ADMIN_USERNAME: 'admin',
+		SYNTHETIC_ADMIN_PASSWORD: 'secret'
+	};
+	const configurations = [
+		{ lifecycle: 'true', maintenance: 'false' },
+		{ lifecycle: 'false', maintenance: 'false' },
+		{ lifecycle: 'false', maintenance: 'true' }
+	];
+
+	expect(documentedRows).toEqual(
+		configurations.map(({ lifecycle, maintenance }) => ({
+			lifecycle,
+			maintenance,
+			count: expectedFullSuiteCheckCount({
+				...credentials,
+				SYNTHETIC_LIFECYCLE_ENABLED: lifecycle,
+				SYNTHETIC_EXPECT_MAINTENANCE: maintenance
+			})
+		}))
+	);
 });
 
 test('push builds publish an immutable image digest manifest for Compose', () => {
@@ -111,8 +153,10 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(Object.prototype.hasOwnProperty.call(triggers, 'workflow_dispatch')).toBe(true);
 
 	const jobs = asRecord(workflow.jobs);
+	const testJob = asRecord(jobs.test);
 	const buildJob = asRecord(jobs['build-and-push']);
 	expect(buildJob.if).toBe("github.event_name == 'push' || github.event_name == 'workflow_dispatch'");
+	expect(testJob.steps).toContainEqual({ run: 'npm run test:ownership' });
 	if (!Array.isArray(buildJob.steps)) {
 		throw new Error('build-and-push.steps must be an array');
 	}
@@ -154,6 +198,8 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const monitor = asRecord(services.monitor);
 	const service = readFileSync(join(process.cwd(), 'deploy/synthetic-ui.service'), 'utf8');
 	const wrapper = readFileSync(join(process.cwd(), 'scripts/run-synthetic-ui.sh'), 'utf8');
+	const guardrails = readFileSync(join(process.cwd(), 'scripts/deployment-guardrails.mjs'), 'utf8');
+	const dockerfile = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8');
 	const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
 	expect(monitor.image).toBe(
 		'${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable ghcr.io/jmal1/selfservice-synthetic-ui:<40-character lowercase commit SHA> tag}'
@@ -164,7 +210,7 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(service).not.toContain('EnvironmentFile=-/opt/synthetic-ui/runtime.env');
 	expect(service).toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=false');
 	expect(service).not.toContain('Environment=SYNTHETIC_EXPECT_MAINTENANCE=true');
-	expect(service).toContain('Environment=SYNTHETIC_REPORT_ROOT=/opt/synthetic-ui/report');
+	expect(service).not.toContain('SYNTHETIC_REPORT_ROOT');
 	expect(service).toContain('Environment=SYNTHETIC_REPORT_KEEP_RUNS=3');
 	expect(service).toContain('ExecStart=/usr/bin/bash /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh');
 	expect(service).not.toContain('/usr/bin/node');
@@ -173,13 +219,32 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(wrapper).toContain(
 		'^ghcr\\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$'
 	);
+	expect(wrapper).toContain('/app/scripts/deployment-guardrails.mjs "$@"');
+	expect(wrapper).toContain('readonly report_root="/opt/synthetic-ui/report"');
+	expect(wrapper).toContain('readonly results_root="/opt/synthetic-ui/results"');
+	expect(wrapper).not.toContain('SYNTHETIC_REPORT_ROOT');
 	expect(wrapper).toContain('exit "$run_status"');
-	expect(wrapper).toContain('unexpected non-directory entry under');
+	expect(guardrails).toContain('unexpected non-directory entry under');
+	expect(guardrails).toContain('container report commands must run as pwuser UID 1001');
+	expect(dockerfile).toContain(
+		'COPY scripts/deployment-guardrails.mjs ./scripts/deployment-guardrails.mjs'
+	);
 	expect(asRecord(monitor.environment).SYNTHETIC_EXPECT_MAINTENANCE).toBe(
 		'${SYNTHETIC_EXPECT_MAINTENANCE:-false}'
 	);
 	expect(asRecord(monitor.environment).PLAYWRIGHT_REPORT_RUN_ID).toBe(
 		'${PLAYWRIGHT_REPORT_RUN_ID:-latest}'
+	);
+	const productionVolumes = [
+		'/opt/synthetic-ui/results:/app/test-results',
+		'/opt/synthetic-ui/report:/app/playwright-report'
+	];
+	expect(monitor.volumes).toEqual(productionVolumes);
+	const wrapperBindSources = [...wrapper.matchAll(
+		/^readonly (?:report|results)_root="([^"]+)"$/gm
+	)].map((match) => match[1]).sort();
+	expect(wrapperBindSources).toEqual(
+		productionVolumes.map((volume) => volume.split(':', 1)[0]).sort()
 	);
 	expect(readme.match(/^set -euo pipefail$/gm)).toHaveLength(3);
 	expect(
@@ -190,6 +255,9 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme.match(/^test "\$SERVICE_RESULT" = success$/gm)).toHaveLength(3);
 	expect(readme.match(/^test "\$SERVICE_STATUS" = 0$/gm)).toHaveLength(3);
 	expect(readme).toContain('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"');
+	expect(readme).toContain('ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"');
+	expect(readme).toContain('test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"');
+	expect(readme).toContain('test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"');
 	expect(
 		readme.match(
 			/^\s*STATE="\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)"$/gm
@@ -199,8 +267,8 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme.match(/^sudo systemctl disable --now synthetic-ui\.timer$/gm)).toHaveLength(3);
 	expect(readme.match(/^sudo systemctl enable --now synthetic-ui\.timer$/gm)).toHaveLength(1);
 	expect(readme).not.toContain('sudo systemctl start synthetic-ui.timer');
-	expect(readme.match(/^test "\$TIMER_UNIT_STATE" = disabled$/gm)).toHaveLength(2);
-	expect(readme.match(/^test "\$TIMER_ACTIVE_STATE" = inactive$/gm)).toHaveLength(2);
+	expect(readme.match(/^test "\$TIMER_UNIT_STATE" = disabled$/gm)).toHaveLength(3);
+	expect(readme.match(/^test "\$TIMER_ACTIVE_STATE" = inactive$/gm)).toHaveLength(3);
 	expect(readme).toContain('test "$STORAGE_STALE_HANDLE_RATE" = 0');
 	expect(readme).toContain('test "$APD_COUNT" = 0');
 	expect(readme).toContain('test "$UI_CHECKS" = green');
@@ -225,12 +293,12 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	expect(readme).toContain('PREVIOUS_IMAGE_ID="$(sudo docker image inspect \\');
 	expect(readme).toContain('validate_runtime "$BACKUP/runtime.env" false');
 	expect(readme).toMatch(
-		/Both modes prove the exact[\s\S]*only pinned-upgrade runs a service[\s\S]*validation:/
+		/Both modes prove the exact[\s\S]*pinned-upgrade rollback runs one[\s\S]*direct Compose canary/
 	);
 	expect(readme).toContain(
 		'Containment rollback only: keep the new unit/wrapper and do not start it.'
 	);
-	expect(readme.match(/^\s*sudo systemctl start synthetic-ui\.service$/gm)).toHaveLength(3);
+	expect(readme.match(/^\s*sudo systemctl start synthetic-ui\.service$/gm)).toHaveLength(2);
 	expect(readme).toContain('/opt/synthetic-ui/report/runs/<run-id>');
 	expect(readme).toContain('keeps only the newest three runs');
 	expect(readme).toContain('The host launcher is a Bash wrapper');

@@ -60,9 +60,15 @@ The runner is published as a Docker image so netbirdv01 doesn't need
 Node.js, npm, or Chromium installed on the host.
 
 ```bash
-# Pull the credentials from Vault → /opt/synthetic-ui/secrets/env
+# Pull the credentials from Vault -> /opt/synthetic-ui/secrets/env
 sudo mkdir -p /opt/synthetic-ui/{secrets,app,results,report/runs}
 sudo chown -R jmal:jmal /opt/synthetic-ui
+# The container runs as pwuser (UID 1001 in the Playwright image); the bind-mount
+# trees, including legacy children, must be owned by that UID.
+sudo install -d -m 0755 -o 1001 -g 1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/report/runs /opt/synthetic-ui/results
+sudo chown -R --no-dereference 1001:1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/results
 
 # Edit /opt/synthetic-ui/secrets/env to set:
 #   SYNTHETIC_USERNAME=synthetic@lab.jmal.io
@@ -87,7 +93,8 @@ The production wrapper writes each HTML report to
 `/opt/synthetic-ui/report/runs/<run-id>` and keeps only the newest three runs,
 so failure evidence stays bounded without touching unrelated host files.
 The host launcher is a Bash wrapper; it validates the exact SHA-tagged image,
-runs Docker Compose, and prunes report history without requiring `/usr/bin/node`.
+runs Docker Compose, and asks the image-side Node guardrail to preflight and
+prune the bind mounts as `pwuser` without requiring `/usr/bin/node` on the host.
 
 Do **not** enable or start `synthetic-ui.timer` as part of this change. A safe
 manual run is appropriate only after the coordinated backend and UI
@@ -148,6 +155,9 @@ $SourceSha = '<full-SHA-of-approved-workflow-run>'
 $Work = Join-Path $env:TEMP "synthetic-ui-$SourceSha"
 git clone --no-checkout https://github.com/jmal1/selfservice-synthetic-ui.git $Work
 git -C $Work fetch --no-tags origin $SourceSha
+# Force LF line endings before any file is written so the hash attests repository bytes,
+# not Windows-transformed CRLF bytes. Must come after clone but before checkout.
+git -C $Work config core.autocrlf false
 git -C $Work checkout --detach $SourceSha
 if ((git -C $Work rev-parse HEAD) -ne $SourceSha) { throw 'source SHA mismatch' }
 if (git -C $Work status --porcelain) { throw 'operator checkout is not clean' }
@@ -170,6 +180,14 @@ $Wrapper = Join-Path $Work 'scripts\run-synthetic-ui.sh'
 $ComposeHash = (Get-FileHash -Algorithm SHA256 $Compose).Hash.ToLower()
 $ServiceHash = (Get-FileHash -Algorithm SHA256 $Service).Hash.ToLower()
 $WrapperHash = (Get-FileHash -Algorithm SHA256 $Wrapper).Hash.ToLower()
+# Byte-level CR rejection: prove the three staged text assets contain only LF line endings
+# (repository bytes). Any CR byte (0x0D) means core.autocrlf transformed the file.
+foreach ($StagedFile in @($Compose, $Service, $Wrapper)) {
+    $StagedBytes = [System.IO.File]::ReadAllBytes($StagedFile)
+    if ($StagedBytes -contains 13) {
+        throw "CR byte (0x0D) detected in $StagedFile — verify core.autocrlf=false was configured before checkout"
+    }
+}
 $Image = "$($Fields[1]):$SourceSha"
 $ComposeStage = "/tmp/docker-compose.$SourceSha.yml"
 $ServiceStage = "/tmp/synthetic-ui.$SourceSha.service"
@@ -222,21 +240,39 @@ test -f "$SERVICE_STAGE"
 test -f "$WRAPPER_STAGE"
 
 if sudo test -f /opt/synthetic-ui/image.env; then
-INSTALL_MODE=pinned
-sudo test -f /opt/synthetic-ui/runtime.env
-validate_runtime /opt/synthetic-ui/runtime.env false
 PREVIOUS_IMAGE="$(sudo sed -n \
   's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
-[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
-PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
-  "$PREVIOUS_IMAGE" --format '{{.Id}}')"
-CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
-  'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
-  -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
-test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
-CURRENT_IMAGE_ID="$(sudo docker image inspect \
-  "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
-test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
+if [[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]; then
+  # Normal pinned upgrade: existing install was a SHA-tagged image.
+  INSTALL_MODE=pinned
+  sudo test -f /opt/synthetic-ui/runtime.env
+  validate_runtime /opt/synthetic-ui/runtime.env false
+  PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+    "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+  CURRENT_IMAGE_ID="$(sudo docker image inspect \
+    "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
+  test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
+elif [[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]; then
+  # First-migration containment retry: image.env holds the immutable digest
+  # that a prior rollback synthesised. Prove runtime=false, digest exists
+  # locally, and current Compose resolves exactly to it before proceeding.
+  INSTALL_MODE=first-migration
+  sudo test -f /opt/synthetic-ui/runtime.env
+  validate_runtime /opt/synthetic-ui/runtime.env false
+  PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+    "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+else
+  echo "[synthetic-ui] invalid pin format in /opt/synthetic-ui/image.env: ${PREVIOUS_IMAGE@Q}" >&2
+  exit 1
+fi
 else
 INSTALL_MODE=first-migration
 if sudo test -f /opt/synthetic-ui/runtime.env; then
@@ -290,6 +326,7 @@ printf '%s\n' "$PREVIOUS_IMAGE_ID" |
 printf '%s  %s\n' "$WRAPPER_SHA256" "$WRAPPER_STAGE" | sha256sum -c -
 printf '%s  %s\n' "$COMPOSE_SHA256" "$COMPOSE_STAGE" | sha256sum -c -
 printf '%s  %s\n' "$SERVICE_SHA256" "$SERVICE_STAGE" | sha256sum -c -
+bash -n "$WRAPPER_STAGE"
 sudo install -m 0644 "$COMPOSE_STAGE" \
   /opt/synthetic-ui/app/deploy/docker-compose.yml.new
 sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
@@ -320,6 +357,11 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   config --images')"
 test "$RESOLVED_IMAGE" = "$IMAGE"
 validate_runtime /opt/synthetic-ui/runtime.env false
+# Initialize the bind-mount roots and repair legacy children as pwuser UID 1001.
+sudo install -d -m 0755 -o 1001 -g 1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/report/runs /opt/synthetic-ui/results
+sudo chown -R --no-dereference 1001:1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/results
 sudo systemctl start synthetic-ui.service
 SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
 SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
@@ -345,8 +387,9 @@ Rollback reads the backup's recorded install mode. A first-migration backup is
 reference; the rollback image comes from the known current immutable digest
 already on the host. A pinned-upgrade backup restores only after verifying its
 immutable Compose, unit, pin, and source identity. Both modes prove the exact
-resolved image and keep the timer disabled; only pinned-upgrade runs a service
-validation:
+resolved image and keep the timer disabled. A pinned-upgrade rollback runs one
+direct Compose canary without invoking the restored legacy wrapper or its
+host-side retention:
 
 ```bash
 set -euo pipefail
@@ -367,6 +410,8 @@ while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
   sleep 5
   STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
 done
+sudo systemctl reset-failed synthetic-ui.service
+test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive
 
 sudo test -f "$BACKUP/image.env"
 sudo test -f "$BACKUP/runtime.env"
@@ -385,7 +430,12 @@ if [ "$INSTALL_MODE" = first-migration ]; then
     /etc/systemd/system/synthetic-ui.service
 elif [ "$INSTALL_MODE" = pinned ]; then
   [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
-  sudo docker image inspect "$ROLLBACK_IMAGE" --format '{{.Id}}' >/dev/null
+  sudo test -f "$BACKUP/previous-image-id"
+  ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"
+  [[ "$ROLLBACK_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+  LOCAL_ROLLBACK_IMAGE_ID="$(sudo docker image inspect \
+    "$ROLLBACK_IMAGE" --format '{{.Id}}')"
+  test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
   sudo test -f "$BACKUP/source.sha"
   ROLLBACK_SOURCE_SHA="$(sudo cat "$BACKUP/source.sha")"
   [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -422,18 +472,36 @@ RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
   exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
   config --images')"
 test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"
+if [ "$INSTALL_MODE" = pinned ]; then
+  RESOLVED_IMAGE_ID="$(sudo docker image inspect \
+    "$RESOLVED_IMAGE" --format '{{.Id}}')"
+  test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+fi
 validate_runtime /opt/synthetic-ui/runtime.env false
 TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
 TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
 test "$TIMER_UNIT_STATE" = disabled
 test "$TIMER_ACTIVE_STATE" = inactive
 if [ "$INSTALL_MODE" = pinned ]; then
-  sudo systemctl start synthetic-ui.service
-  SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
-  SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
-  test "$SERVICE_RESULT" = success
-  test "$SERVICE_STATUS" = 0
-  validate_runtime /opt/synthetic-ui/runtime.env false
+  ROLLBACK_RUN_ID="rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  [[ "$ROLLBACK_RUN_ID" =~ ^rollback-[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]]
+  set +e
+  sudo env \
+    ROLLBACK_IMAGE="$ROLLBACK_IMAGE" \
+    PLAYWRIGHT_REPORT_RUN_ID="$ROLLBACK_RUN_ID" \
+    sh -c '
+      set -aeu
+      . /opt/synthetic-ui/image.env
+      . /opt/synthetic-ui/runtime.env
+      test "$SYNTHETIC_UI_IMAGE" = "$ROLLBACK_IMAGE"
+      exec docker compose \
+        -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
+        run --rm --no-deps --pull never monitor
+    '
+  ROLLBACK_CANARY_STATUS=$?
+  set -e
+  test "$ROLLBACK_CANARY_STATUS" = 0
+  sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"
 elif [ "$INSTALL_MODE" = first-migration ]; then
   # Containment rollback only: keep the new unit/wrapper and do not start it.
   sudo test -f /etc/systemd/system/synthetic-ui.service
@@ -442,7 +510,19 @@ else
   echo "Unsupported backup install mode: $INSTALL_MODE" >&2
   exit 1
 fi
-``` 
+test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive
+TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
+TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
+test "$TIMER_UNIT_STATE" = disabled
+test "$TIMER_ACTIVE_STATE" = inactive
+```
+
+> **Danger — containment rollback only.** Report and results ownership migration
+> is forward-only; guessing a recursive UID1000 restoration is unsafe. The pinned
+> rollback therefore restores the prior files and pin but never starts the
+> restored legacy service/wrapper or runs host-side retention. Keep the timer
+> disabled and do not enable scheduling until the forward host hardening is
+> reinstalled.
 
 ### Explicit timer re-enable after containment
 
@@ -577,9 +657,9 @@ current expected check counts are:
 
 | lifecycle | expected maintenance | expected checks |
 |-----------|----------------------|-----------------|
-| `true`    | `false`              | 19              |
-| `false`   | `false`              | 18              |
-| `false`   | `true`               | 19              |
+| `true`    | `false`              | 21              |
+| `false`   | `false`              | 20              |
+| `false`   | `true`               | 21              |
 
 The `true`/`true` combination is rejected. If the optional instructor identity
 is absent, its four statically skipped checks are excluded from the dynamic
