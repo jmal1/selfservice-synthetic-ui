@@ -147,10 +147,17 @@ test('README configured check-count table matches computed production configurat
 test('push builds publish an immutable image digest manifest for Compose', () => {
 	const workflowText = readFileSync(join(process.cwd(), '.github/workflows/build.yml'), 'utf8');
 	const workflow = asRecord(parse(workflowText));
+	const concurrency = asRecord(workflow.concurrency);
 	const triggers = asRecord(workflow.on);
 	const push = asRecord(triggers.push);
 	expect(push.branches).toEqual(['master', 'main']);
 	expect(Object.prototype.hasOwnProperty.call(triggers, 'workflow_dispatch')).toBe(true);
+	expect(concurrency.group).toBe(
+		'${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}'
+	);
+	expect(concurrency.group).not.toContain('github.ref');
+	expect(concurrency.group).toContain('github.run_id');
+	expect(concurrency['cancel-in-progress']).toBe(true);
 
 	const jobs = asRecord(workflow.jobs);
 	const testJob = asRecord(jobs.test);
