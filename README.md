@@ -113,11 +113,23 @@ maintenance changes have deployed in this order:
 
 ### Local development (Node-based)
 
-For debugging tests interactively you do need Node + Playwright:
+For debugging tests interactively you do need Node + Playwright. The safe,
+non-mutating gate for CI and local verification is `npm run verify`: it runs the
+full pre-build checklist (`lint`, `test:unit`, `test:ownership`) and then asks
+Playwright to discover/compile the suite with `PUSHGATEWAY_URL=skip`, so it does
+not log into the live site or mutate production.
 
 ```bash
 npm ci
 npx playwright install chromium
+
+# Linux/macOS
+npm run verify
+PUSHGATEWAY_URL=skip npx playwright test --list
+
+# Windows PowerShell
+npm run verify
+$env:PUSHGATEWAY_URL = 'skip'; npx playwright test --list
 
 cat > .env <<'EOF'
 SYNTHETIC_USERNAME=synthetic@lab.jmal.io

@@ -11,7 +11,8 @@
     "test:no-push": "PUSHGATEWAY_URL=skip playwright test",
     "test:headed": "playwright test --headed",
     "report": "playwright show-report",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "verify": "npm run lint && npm run test:unit && npm run test:ownership && node scripts/verify-playwright-list.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
