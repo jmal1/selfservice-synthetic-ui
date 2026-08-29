@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+  echo '[ownership] sudo is unavailable or passwordless sudo is not configured; skipping ownership integration guard' >&2
+  exit 0
+fi
+
 repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace="$(mktemp -d -t synthetic-ui-ownership-XXXXXX)"
 fixture="$workspace/fixture"

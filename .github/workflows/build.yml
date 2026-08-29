@@ -25,9 +25,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - run: npm run lint
-      - run: npm run test:unit
-      - run: npm run test:ownership
+      - run: npm run verify
 
   build-and-push:
     needs: test

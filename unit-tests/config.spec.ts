@@ -144,6 +144,21 @@ test('README configured check-count table matches computed production configurat
 	);
 });
 
+test('package verify includes lint, unit, ownership, and non-mutating discovery steps', () => {
+	const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+		scripts: Record<string, string>;
+	};
+	const verify = packageJson.scripts.verify;
+	for (const step of [
+		'npm run lint',
+		'npm run test:unit',
+		'npm run test:ownership',
+		'node scripts/verify-playwright-list.mjs'
+	]) {
+		expect(verify).toContain(step);
+	}
+});
+
 test('push builds publish an immutable image digest manifest for Compose', () => {
 	const workflowText = readFileSync(join(process.cwd(), '.github/workflows/build.yml'), 'utf8');
 	const workflow = asRecord(parse(workflowText));
@@ -163,7 +178,7 @@ test('push builds publish an immutable image digest manifest for Compose', () =>
 	const testJob = asRecord(jobs.test);
 	const buildJob = asRecord(jobs['build-and-push']);
 	expect(buildJob.if).toBe("github.event_name == 'push' || github.event_name == 'workflow_dispatch'");
-	expect(testJob.steps).toContainEqual({ run: 'npm run test:ownership' });
+	expect(testJob.steps).toContainEqual({ run: 'npm run verify' });
 	if (!Array.isArray(buildJob.steps)) {
 		throw new Error('build-and-push.steps must be an array');
 	}
