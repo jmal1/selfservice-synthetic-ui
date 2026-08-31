@@ -1,38 +1,28 @@
 // runner-results.spec.ts — asserts that per-action assessment results render
-// in the UI for the most recent completed run.
+// in the student-owned pod testing UI for a retained completed run.
 //
-// Uses the instructor/admin account so it can access GET /api/v1/admin/runs
-// (student-role would get 403). Once the most recent completed run is located
-// by ID, the spec navigates to the student-facing run detail page at
-// /pods/{podId}/testing/runs/{runId} — the same page a student sees for
-// their own runs.
+// Uses the ordinary synthetic student session and the normal /api/v1/pods
+// listing so the test only inspects pods visible to that student. The
+// instructor/admin account is intentionally not used because it cannot see a
+// student's pod testing routes and cannot be assumed to own the retained run.
 //
 // What this checks:
-//   1. GET /api/v1/admin/runs returns a non-empty list (runs exist in prod)
-//   2. At least one run has a completed status (not stuck in provisioning)
-//   3. The run detail page renders without an error boundary or spinner
-//   4. The "Workflow Results" section is present with at least one result
-//   5. Expanding a result reveals the action-level results table with rows
+//   1. GET /api/v1/pods returns a visible pod list for the student
+//   2. A terminal run remains attached to a still-active student pod
+//   3. The pod testing dashboard and run detail pages render without errors
+//   4. The "Workflow Results" section shows a retained workflow and action output
 //
 // Hollowness guard: the spec explicitly FAILs (does NOT skip) if there are no
-// runs or no completed runs. An empty list is a production signal, not an
-// acceptable configuration gap.
+// student-visible terminal runs or no retained result text to render.
 
-import { adminTest, expect } from '../lib/fixtures.ts';
+import { expect, test } from '../lib/fixtures.ts';
+import { parsePodSummaries } from '../lib/maintenance.ts';
 import { meta } from '../lib/synthetic.ts';
 
-const ADMIN_USERNAME = process.env.SYNTHETIC_ADMIN_USERNAME;
-adminTest.skip(
-	!ADMIN_USERNAME,
-	'SYNTHETIC_ADMIN_USERNAME not configured; skipping instructor-role synthetic specs'
-);
-
-// Minimal shape of the admin runs list entry. The detail response adds
-// `results`, but the list response only needs id / pod_id / status.
 interface RunSummary {
 	id: string;
-	pod_id: string;
-	status: string;
+	pod_id?: string;
+	status?: string;
 	started_at?: string | null;
 }
 
@@ -56,71 +46,43 @@ interface PodTestingRunDetail extends RunSummary {
 	results?: WorkflowResultSummary[];
 }
 
-// Statuses that represent a still-in-progress run.
 const ACTIVE_STATUSES = new Set(['pending', 'provisioning', 'running']);
 
-const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const exactText = (value: string) => new RegExp(escapeRegex(value));
-
-adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) => {
+test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 	meta(testInfo, {
-		title: 'Assessment run results render for instructor',
+		title: 'Student-owned assessment run results render',
 		description:
-			'Finds the most recent completed assessment run via GET /api/v1/admin/runs, verifies the ' +
-			'pod testing dashboard + history pages, then navigates from /pods/{podId}/testing to the ' +
-			'completed run detail and asserts the workflow/action output content visible to a student. ' +
+			'Finds a terminal assessment run attached to the logged-in synthetic student\'s own pods via ' +
+			'GET /api/v1/pods, verifies the pod testing dashboard + history pages, then navigates to the ' +
+			'completed run detail and asserts the workflow/action output content visible to the student. ' +
 			'Catches broken results rendering, a stalled runner that never writes results back, or a ' +
-			'broken dashboard navigation path. Deliberately FAILs (does not skip) if no completed runs ' +
-			'exist in production.',
+			'broken dashboard navigation path. Deliberately FAILs (does not skip) if no retained student-owned ' +
+			'run exists in production.',
 		severity: 'warning',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-runner_results_render-fails'
 	});
 
-	// ── Step 1: get admin runs list via API ────────────────────────────
-	// Use page.request so the call carries the admin session cookies.
-	await page.goto('/admin/runs');
-
-	const runsResp = await page.request.get('/api/v1/admin/runs', {
+	const podsResp = await page.request.get('/api/v1/pods', {
 		headers: { accept: 'application/json' },
-		failOnStatusCode: false
+		failOnStatusCode: false,
+		timeout: 15_000
 	});
 	expect(
-		runsResp.status(),
-		'GET /api/v1/admin/runs must return 200 — either the admin account lost its role, ' +
-			'or the runs API endpoint broke'
+		podsResp.status(),
+		'GET /api/v1/pods must return 200 for the authenticated student session'
 	).toBe(200);
 
-	const runs: RunSummary[] = await runsResp.json();
+	const studentPods = parsePodSummaries(await podsResp.json()).slice(0, 25);
 	expect(
-		runs.length,
-		'GET /api/v1/admin/runs returned an empty list. In production there should always be ' +
-			'at least one run. Either no student has ever triggered an assessment ' +
-			'(unlikely once deployed), or the runs API is returning an empty response incorrectly.'
+		studentPods.length,
+		'GET /api/v1/pods returned zero student-visible pods; production should keep at least one active pod for the student synthetic.'
 	).toBeGreaterThan(0);
 
-	const terminalCandidates = [...runs]
-		.filter((run) => !ACTIVE_STATUSES.has(run.status))
-		.sort((a, b) => {
-			const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
-			const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
-			return tb - ta;
-		})
-		.slice(0, 25);
-
-	if (terminalCandidates.length === 0) {
-		throw new Error(
-			`No completed assessment runs found. All ${runs.length} run(s) are still in an active state ` +
-				`(${[...ACTIVE_STATUSES].join('/')}). Wait for at least one run to reach a terminal state ` +
-				`before this check can pass. If runs are permanently stuck, check the assessment runner worker.`
-		);
-	}
-
-	const findRetainedTerminalRun = async (runsList: RunSummary[]) => {
-		let triedCount = 0;
-		for (const run of runsList) {
-			triedCount += 1;
-			const podId = run.pod_id;
+	const findRetainedTerminalRun = async (pods: Array<{ id: string }>) => {
+		const candidateRuns: Array<{ podId: string; run: RunSummary }> = [];
+		for (const pod of pods) {
+			const podId = pod.id;
 			const dashboardResp = await page.request.get(`/api/v1/pods/${podId}/testing`, {
 				headers: { accept: 'application/json' },
 				failOnStatusCode: false,
@@ -129,20 +91,27 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 			if (dashboardResp.status() === 404) continue;
 			if (dashboardResp.status() !== 200) {
 				throw new Error(
-					`GET /api/v1/pods/${podId}/testing returned ${dashboardResp.status()} for terminal run ${run.id}; ` +
-						`this is not a normal destroyed-pod 404 and should be investigated.`
+					`GET /api/v1/pods/${podId}/testing returned ${dashboardResp.status()} for a student-owned pod. ` +
+						`This is not a normal destroyed-pod 404 and should be investigated.`
 				);
 			}
 			const dashboard = await dashboardResp.json();
 			if (!Array.isArray(dashboard?.recent_runs)) {
 				throw new Error(
-					`GET /api/v1/pods/${podId}/testing returned a non-array recent_runs payload for terminal run ${run.id}`
+					`GET /api/v1/pods/${podId}/testing returned a non-array recent_runs payload for a student-owned pod`
 				);
 			}
-			if (!(dashboard.recent_runs as RunSummary[]).some((candidate) => candidate.id === run.id)) {
-				continue;
+			for (const candidate of (dashboard.recent_runs as RunSummary[]).slice(0, 25)) {
+				if (!candidate?.id || ACTIVE_STATUSES.has((candidate.status ?? '').toLowerCase())) continue;
+				candidateRuns.push({ podId, run: candidate });
+				if (candidateRuns.length >= 25) break;
 			}
+			if (candidateRuns.length >= 25) break;
+		}
 
+		let triedCount = 0;
+		for (const { podId, run } of candidateRuns.slice(0, 25)) {
+			triedCount += 1;
 			const historyResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs`, {
 				headers: { accept: 'application/json' },
 				failOnStatusCode: false,
@@ -151,7 +120,7 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 			if (historyResp.status() === 404) continue;
 			if (historyResp.status() !== 200) {
 				throw new Error(
-					`GET /api/v1/pods/${podId}/testing/runs returned ${historyResp.status()} for terminal run ${run.id}; ` +
+					`GET /api/v1/pods/${podId}/testing/runs returned ${historyResp.status()} for student-owned run ${run.id}; ` +
 						`this is not a normal destroyed-pod 404 and should be investigated.`
 				);
 			}
@@ -168,55 +137,51 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 			if (detailResp.status() === 404) continue;
 			if (detailResp.status() !== 200) {
 				throw new Error(
-					`GET /api/v1/pods/${podId}/testing/runs/${run.id} returned ${detailResp.status()}; ` +
+					`GET /api/v1/pods/${podId}/testing/runs/${run.id} returned ${detailResp.status()} for the student-owned pod; ` +
 						`this is not a normal destroyed-pod 404 and should be investigated.`
 				);
 			}
 			const detail: PodTestingRunDetail = await detailResp.json();
-			if (detail.id !== run.id || ACTIVE_STATUSES.has(detail.status)) {
+			if (detail.id !== run.id || ACTIVE_STATUSES.has((detail.status ?? '').toLowerCase())) {
 				continue;
 			}
-			return { podId, run, detail, triedCount };
+
+			const workflowWithOutput = (detail.results ?? []).find((result) => {
+				const actionResults = result.action_results ?? [];
+				const hasActionResults = actionResults.length > 0;
+				const hasStudentText = (result.student_message ?? '').trim().length > 0;
+				const hasActionMessage = actionResults.some((action) => (action.message ?? '').trim().length > 0);
+				return hasActionResults && (hasStudentText || hasActionMessage);
+			});
+			if (!workflowWithOutput) continue;
+
+			const evidenceAction = (workflowWithOutput.action_results ?? []).find(
+				(action) => (action.message ?? '').trim().length > 0
+			);
+			const evidenceText = (workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
+			if (!evidenceText) continue;
+
+			return { podId, run, workflowWithOutput, evidenceAction, evidenceText, triedCount };
 		}
 
 		throw new Error(
-			`No terminal assessment run remained attached to an active pod dashboard/history/detail flow after ` +
-				`inspecting ${triedCount}/${runsList.length} terminal candidates from GET /api/v1/admin/runs. ` +
-				`Each candidate either had pod routes return 404 after completion (destroyed runner-smoke pod) or it ` +
-				`did not appear in the dashboard/history payloads. Preserve a run whose pod still exists and contains ` +
-				`the completed result in the testing UI.`
+			`No terminal assessment run with actionable student-visible workflow output remained attached to a student-visible pod after inspecting ` +
+				`${triedCount}/${candidateRuns.length} candidate runs from the first ${studentPods.length} student-owned pods. ` +
+				`Each candidate either had pod routes return 404 after completion (destroyed smoke pod), it was still active, or it ` +
+				`did not retain non-empty workflow/action evidence in the testing API.`
 		);
 	};
 
-	const retainedRun = await findRetainedTerminalRun(terminalCandidates);
-	const { podId, run: completedRun, detail } = retainedRun;
-
-	const workflowWithOutput = (detail.results ?? []).find((result) => {
-		const actionResults = result.action_results ?? [];
-		const hasActionResults = actionResults.length > 0;
-		const hasStudentText = (result.student_message ?? '').trim().length > 0;
-		const hasActionMessage = actionResults.some((action) => (action.message ?? '').trim().length > 0);
-		return hasActionResults && (hasStudentText || hasActionMessage);
-	});
-	if (!workflowWithOutput) {
+	const retainedRun = await findRetainedTerminalRun(studentPods);
+	const { podId, run: completedRun, workflowWithOutput, evidenceAction, evidenceText } = retainedRun;
+	if (!workflowWithOutput || !evidenceText) {
 		throw new Error(
 			`No completed workflow result on ${completedRun.id} retains at least one action result and ` +
-				`non-empty student/action output. The run is terminal and its pod still exists, but the API ` +
-				`returned no actionable workflow output to render in the testing dashboard/detail UI.`
+				`non-empty student/action output. The run is terminal and the pod is still visible to the student, ` +
+				`but the API returned no actionable workflow output to render in the testing dashboard/detail UI.`
 		);
 	}
 
-	const evidenceAction = (workflowWithOutput.action_results ?? []).find(
-		(action) => (action.message ?? '').trim().length > 0
-	);
-	const evidenceText = (workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
-	if (!evidenceText) {
-		throw new Error(
-			`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had action results but no visible text content.`
-		);
-	}
-
-	// ── Step 2: navigate the real testing dashboard and history pages ───
 	await page.goto(`/pods/${podId}/testing`);
 	await expect(page, 'testing dashboard route should render after navigation').toHaveURL(
 		new RegExp(`^.*\/pods\/${podId}\/testing/?$`),
@@ -251,15 +216,13 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 	).toBeVisible({ timeout: 15_000 });
 	await historyRowLink.click();
 
-	// ── Step 3: assert the result detail page and workflow/action content ─
 	await expect(page, 'run detail route should render after history navigation').toHaveURL(
 		new RegExp(`^.*\/pods\/${podId}\/testing\/runs\/${completedRun.id}/?$`),
 		{ timeout: 15_000 }
 	);
 	await expect(
 		page.getByRole('heading', { name: 'Run Details' }),
-		'"Run Details" heading must be visible — if missing, the run detail page is showing ' +
-			'a spinner or error boundary instead of the result'
+		'"Run Details" heading must be visible — if missing, the run detail page is showing a spinner or error boundary instead of the result'
 	).toBeVisible({ timeout: 15_000 });
 	await expect(
 		page.getByRole('heading', { name: 'Workflow Results' }),
@@ -268,7 +231,7 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 
 	const workflowPicker = page
 		.locator('button[aria-expanded]')
-		.filter({ hasText: workflowWithOutput.workflow_name })
+		.filter({ has: page.getByText(workflowWithOutput.workflow_name, { exact: true }) })
 		.first();
 	await expect(
 		workflowPicker,
@@ -282,34 +245,35 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 		.last();
 	await expect(
 		actionTable,
-		'Action results table must appear after expanding a workflow result. ' +
-			'Its absence means result.action_results is null/empty or the expand click failed'
+		'Action results table must appear after expanding a workflow result. Its absence means result.action_results is null/empty or the expand click failed'
 	).toBeVisible({ timeout: 10_000 });
 
 	const actionRows = actionTable.locator('tbody tr');
 	const rowCount = await actionRows.count();
 	expect(
 		rowCount,
-		'Action results table must have at least one row — a completed workflow with zero ' +
-			'action records is a runner data regression'
+		'Action results table must have at least one row — a completed workflow with zero action records is a runner data regression'
 	).toBeGreaterThan(0);
 
 	const workflowText = workflowWithOutput.student_message?.trim();
 	if (workflowText) {
+		const workflowMessage = workflowPicker.getByText(workflowText, { exact: true });
 		await expect(
-			workflowPicker,
-			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message in the expanded button text`
-		).toContainText(exactText(workflowText));
+			workflowMessage,
+			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message as its own paragraph`
+		).toHaveText(workflowText);
 	} else if (evidenceAction) {
-		const actionRow = actionRows.filter({ hasText: exactText(evidenceAction.action) }).first();
+		const actionRow = actionRows
+			.filter({ has: page.getByText(evidenceAction.action, { exact: true }) })
+			.first();
 		await expect(
-			actionRow.locator('td').first(),
+			actionRow.locator('td').nth(0),
 			`Expected the "${evidenceAction.action}" row to render the exact action name in the first cell`
-		).toContainText(exactText(evidenceAction.action));
+		).toHaveText(evidenceAction.action);
 		await expect(
 			actionRow.locator('td').nth(3),
 			`Expected action "${evidenceAction.action}" to render the exact non-empty action output message in the fourth cell`
-		).toContainText(exactText(evidenceAction.message!.trim()));
+		).toHaveText(evidenceAction.message!.trim());
 	} else {
 		throw new Error(
 			`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had no visible message evidence to assert.`
