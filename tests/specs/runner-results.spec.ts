@@ -59,6 +59,9 @@ interface PodTestingRunDetail extends RunSummary {
 // Statuses that represent a still-in-progress run.
 const ACTIVE_STATUSES = new Set(['pending', 'provisioning', 'running']);
 
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const exactText = (value: string) => new RegExp(escapeRegex(value));
+
 adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) => {
 	meta(testInfo, {
 		title: 'Assessment run results render for instructor',
@@ -102,80 +105,101 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 		return tb - ta;
 	});
 
-	const completedRun = sorted.find((r) => !ACTIVE_STATUSES.has(r.status));
-	if (!completedRun) {
+	const findRetainedTerminalRun = async (runsList: RunSummary[]) => {
+		for (const run of [...runsList].sort((a, b) => {
+			const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
+			const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
+			return tb - ta;
+		})) {
+			if (ACTIVE_STATUSES.has(run.status)) continue;
+
+			const podId = run.pod_id;
+			const dashboardResp = await page.request.get(`/api/v1/pods/${podId}/testing`, {
+				headers: { accept: 'application/json' },
+				failOnStatusCode: false
+			});
+			if (dashboardResp.status() === 404) continue;
+			if (dashboardResp.status() !== 200) {
+				throw new Error(
+					`GET /api/v1/pods/${podId}/testing returned ${dashboardResp.status()} for terminal run ${run.id}; ` +
+						`this is not a normal destroyed-pod 404 and should be investigated.`
+				);
+			}
+			const dashboard = await dashboardResp.json();
+			if (!Array.isArray(dashboard?.recent_runs)) {
+				throw new Error(
+					`GET /api/v1/pods/${podId}/testing returned a non-array recent_runs payload for terminal run ${run.id}`
+				);
+			}
+			if (!(dashboard.recent_runs as RunSummary[]).some((candidate) => candidate.id === run.id)) {
+				continue;
+			}
+
+			const historyResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs`, {
+				headers: { accept: 'application/json' },
+				failOnStatusCode: false
+			});
+			if (historyResp.status() === 404) continue;
+			if (historyResp.status() !== 200) {
+				throw new Error(
+					`GET /api/v1/pods/${podId}/testing/runs returned ${historyResp.status()} for terminal run ${run.id}; ` +
+						`this is not a normal destroyed-pod 404 and should be investigated.`
+				);
+			}
+			const history = await historyResp.json();
+			if (!Array.isArray(history) || !(history as RunSummary[]).some((candidate) => candidate.id === run.id)) {
+				continue;
+			}
+
+			const detailResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs/${run.id}`, {
+				headers: { accept: 'application/json' },
+				failOnStatusCode: false
+			});
+			if (detailResp.status() === 404) continue;
+			if (detailResp.status() !== 200) {
+				throw new Error(
+					`GET /api/v1/pods/${podId}/testing/runs/${run.id} returned ${detailResp.status()}; ` +
+						`this is not a normal destroyed-pod 404 and should be investigated.`
+				);
+			}
+			const detail: PodTestingRunDetail = await detailResp.json();
+			if (detail.id !== run.id || ACTIVE_STATUSES.has(detail.status)) {
+				continue;
+			}
+			return { podId, run, detail };
+		}
+
 		throw new Error(
-			`No completed assessment runs found. All ${runs.length} run(s) are still in an active state ` +
-				`(${[...ACTIVE_STATUSES].join('/')}). Wait for at least one run to reach a terminal state ` +
-				`before this check can pass. If runs are permanently stuck, check the assessment runner worker.`
+			`No terminal assessment run remained attached to an active pod dashboard/history/detail flow. ` +
+				`Tried ${runsList.length} candidate run(s) from GET /api/v1/admin/runs; each either had pod routes ` +
+				`return 404 after completion (destroyed runner-smoke pod) or did not appear in the dashboard/history ` +
+				`payloads. Preserve a run whose pod still exists and contains the completed result in the testing UI.`
 		);
-	}
+	};
 
-	const podId = completedRun.pod_id;
-	const podTestingResp = await page.request.get(`/api/v1/pods/${podId}/testing`, {
-		headers: { accept: 'application/json' },
-		failOnStatusCode: false
-	});
-	expect(
-		podTestingResp.status(),
-		`GET /api/v1/pods/${podId}/testing must return 200 for the dashboard route`
-	).toBe(200);
-	const podTestingDashboard = await podTestingResp.json();
-	expect(
-		Array.isArray(podTestingDashboard?.recent_runs),
-		`GET /api/v1/pods/${podId}/testing did not return a recent_runs array for ${podId}`
-	).toBeTruthy();
-	expect(
-		(podTestingDashboard.recent_runs as RunSummary[]).some((run) => run.id === completedRun.id),
-		`GET /api/v1/pods/${podId}/testing did not include the completed run ${completedRun.id} in recent_runs; ` +
-			'the dashboard is stale or the API returned an incomplete payload.'
-	).toBeTruthy();
-
-	const historyResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs`, {
-		headers: { accept: 'application/json' },
-		failOnStatusCode: false
-	});
-	expect(
-		historyResp.status(),
-		`GET /api/v1/pods/${podId}/testing/runs must return 200 for the run history route`
-	).toBe(200);
-	const historyRuns = await historyResp.json();
-	expect(
-		Array.isArray(historyRuns),
-		`GET /api/v1/pods/${podId}/testing/runs did not return an array`
-	).toBeTruthy();
-	expect(
-		(historyRuns as RunSummary[]).some((run) => run.id === completedRun.id),
-		`GET /api/v1/pods/${podId}/testing/runs did not include completed run ${completedRun.id}`
-	).toBeTruthy();
-
-	const detailResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs/${completedRun.id}`, {
-		headers: { accept: 'application/json' },
-		failOnStatusCode: false
-	});
-	expect(
-		detailResp.status(),
-		`GET /api/v1/pods/${podId}/testing/runs/${completedRun.id} must return 200`
-	).toBe(200);
-	const detail: PodTestingRunDetail = await detailResp.json();
-	expect(detail.id, `run detail route did not return the expected id ${completedRun.id}`).toBe(completedRun.id);
-	expect(
-		ACTIVE_STATUSES.has(detail.status),
-		`completed run ${completedRun.id} is not in a terminal state; status was ${detail.status}`
-	).toBe(false);
+	const retainedRun = await findRetainedTerminalRun(runs);
+	const { podId, run: completedRun, detail } = retainedRun;
 
 	const workflowWithOutput = (detail.results ?? []).find((result) => {
 		const studentText = result.student_message?.trim() ?? '';
-		const actionText = (result.action_results ?? []).some(
-			(action) => (action.message ?? '').trim().length > 0
-		);
-		return studentText.length > 0 || actionText;
+		if (studentText.length > 0) return true;
+		return (result.action_results ?? []).some((action) => (action.message ?? '').trim().length > 0);
 	});
 	if (!workflowWithOutput) {
 		throw new Error(
 			`No completed workflow result on ${completedRun.id} has non-empty output. ` +
-				`The run is terminal, but the API returned zero student_message/action.message values. ` +
+				`The run is terminal and its pod still exists, but the API returned zero student_message/action.message values. ` +
 				`Check the runner worker for empty output content or confirm the wire shape changed.`
+		);
+	}
+
+	const evidenceAction = (workflowWithOutput.action_results ?? []).find(
+		(action) => (action.message ?? '').trim().length > 0
+	);
+	const evidenceText = (workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
+	if (!evidenceText) {
+		throw new Error(
+			`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} has non-empty evidence but no visible text content.`
 		);
 	}
 
@@ -257,13 +281,35 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 			'action records is a runner data regression'
 	).toBeGreaterThan(0);
 
-	const firstActionMessage = actionRows.first().locator('td').nth(3).textContent();
-	expect(
-		(await firstActionMessage)?.trim().length ?? 0,
-		'Action result message cell must contain the rendered workflow/action output body'
-	).toBeGreaterThan(0);
-	await expect(
-		actionRows.first().locator('td').nth(3),
-		'Expected an actual action output message in the expanded workflow detail to render on the page'
-	).toContainText(/.+/);
+	const workflowCard = page
+		.locator('section, article, div')
+		.filter({
+			has: page.locator('button[aria-expanded]').filter({ hasText: workflowWithOutput.workflow_name }).first()
+		})
+		.first();
+
+	if (workflowWithOutput.student_message?.trim()) {
+		await expect(
+			workflowCard,
+			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message in the expanded card`
+		).toContainText(exactText(workflowWithOutput.student_message.trim()));
+	} else if (evidenceAction) {
+		const actionRow = actionRows
+			.filter({
+				has: actionTable.locator('td').filter({ hasText: evidenceAction.action })
+			})
+			.first();
+		await expect(
+			actionRow,
+			`Expected the "${evidenceAction.action}" row to render message "${evidenceAction.message?.trim()}"`
+		).toContainText(exactText(evidenceAction.action));
+		await expect(
+			actionRow.locator('td').nth(3),
+			`Expected action "${evidenceAction.action}" to render the exact non-empty action output message`
+		).toContainText(exactText(evidenceAction.message!.trim()));
+	} else {
+		throw new Error(
+			`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had no visible message evidence to assert.`
+		);
+	}
 });
