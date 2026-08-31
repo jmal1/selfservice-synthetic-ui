@@ -19,12 +19,6 @@ import { expect, test } from '../lib/fixtures.ts';
 import { parsePodSummaries } from '../lib/maintenance.ts';
 import { meta } from '../lib/synthetic.ts';
 
-const STUDENT_USERNAME = process.env.SYNTHETIC_USERNAME;
-test.skip(
-	!STUDENT_USERNAME,
-	'SYNTHETIC_USERNAME not configured; skipping student-owned synthetic specs'
-);
-
 interface RunSummary {
 	id: string;
 	pod_id?: string;
@@ -53,9 +47,6 @@ interface PodTestingRunDetail extends RunSummary {
 }
 
 const ACTIVE_STATUSES = new Set(['pending', 'provisioning', 'running']);
-
-const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const exactText = (value: string) => new RegExp(escapeRegex(value));
 
 test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 	meta(testInfo, {
@@ -154,43 +145,40 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 			if (detail.id !== run.id || ACTIVE_STATUSES.has((detail.status ?? '').toLowerCase())) {
 				continue;
 			}
-			return { podId, run, detail, triedCount };
+
+			const workflowWithOutput = (detail.results ?? []).find((result) => {
+				const actionResults = result.action_results ?? [];
+				const hasActionResults = actionResults.length > 0;
+				const hasStudentText = (result.student_message ?? '').trim().length > 0;
+				const hasActionMessage = actionResults.some((action) => (action.message ?? '').trim().length > 0);
+				return hasActionResults && (hasStudentText || hasActionMessage);
+			});
+			if (!workflowWithOutput) continue;
+
+			const evidenceAction = (workflowWithOutput.action_results ?? []).find(
+				(action) => (action.message ?? '').trim().length > 0
+			);
+			const evidenceText = (workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
+			if (!evidenceText) continue;
+
+			return { podId, run, workflowWithOutput, evidenceAction, evidenceText, triedCount };
 		}
 
 		throw new Error(
-			`No terminal assessment run remained attached to a student-visible pod after inspecting ` +
+			`No terminal assessment run with actionable student-visible workflow output remained attached to a student-visible pod after inspecting ` +
 				`${triedCount}/${candidateRuns.length} candidate runs from the first ${studentPods.length} student-owned pods. ` +
-				`Each candidate either had pod routes return 404 after completion (destroyed smoke pod) or it ` +
-				`did not appear in the dashboard/history payloads. Preserve a run whose pod still exists and contains ` +
-				`the completed result in the testing UI.`
+				`Each candidate either had pod routes return 404 after completion (destroyed smoke pod), it was still active, or it ` +
+				`did not retain non-empty workflow/action evidence in the testing API.`
 		);
 	};
 
 	const retainedRun = await findRetainedTerminalRun(studentPods);
-	const { podId, run: completedRun, detail } = retainedRun;
-
-	const workflowWithOutput = (detail.results ?? []).find((result) => {
-		const actionResults = result.action_results ?? [];
-		const hasActionResults = actionResults.length > 0;
-		const hasStudentText = (result.student_message ?? '').trim().length > 0;
-		const hasActionMessage = actionResults.some((action) => (action.message ?? '').trim().length > 0);
-		return hasActionResults && (hasStudentText || hasActionMessage);
-	});
-	if (!workflowWithOutput) {
+	const { podId, run: completedRun, workflowWithOutput, evidenceAction, evidenceText } = retainedRun;
+	if (!workflowWithOutput || !evidenceText) {
 		throw new Error(
 			`No completed workflow result on ${completedRun.id} retains at least one action result and ` +
 				`non-empty student/action output. The run is terminal and the pod is still visible to the student, ` +
 				`but the API returned no actionable workflow output to render in the testing dashboard/detail UI.`
-		);
-	}
-
-	const evidenceAction = (workflowWithOutput.action_results ?? []).find(
-		(action) => (action.message ?? '').trim().length > 0
-	);
-	const evidenceText = (workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
-	if (!evidenceText) {
-		throw new Error(
-			`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had action results but no visible text content.`
 		);
 	}
 
@@ -243,7 +231,7 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 
 	const workflowPicker = page
 		.locator('button[aria-expanded]')
-		.filter({ hasText: workflowWithOutput.workflow_name })
+		.filter({ has: page.getByText(workflowWithOutput.workflow_name, { exact: true }) })
 		.first();
 	await expect(
 		workflowPicker,
@@ -269,20 +257,23 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 
 	const workflowText = workflowWithOutput.student_message?.trim();
 	if (workflowText) {
+		const workflowMessage = workflowPicker.getByText(workflowText, { exact: true });
 		await expect(
-			workflowPicker,
-			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message in the expanded button text`
-		).toContainText(exactText(workflowText));
+			workflowMessage,
+			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message as its own paragraph`
+		).toHaveText(workflowText);
 	} else if (evidenceAction) {
-		const actionRow = actionRows.filter({ hasText: exactText(evidenceAction.action) }).first();
+		const actionRow = actionRows
+			.filter({ has: page.getByText(evidenceAction.action, { exact: true }) })
+			.first();
 		await expect(
-			actionRow.locator('td').first(),
+			actionRow.locator('td').nth(0),
 			`Expected the "${evidenceAction.action}" row to render the exact action name in the first cell`
-		).toContainText(exactText(evidenceAction.action));
+		).toHaveText(evidenceAction.action);
 		await expect(
 			actionRow.locator('td').nth(3),
 			`Expected action "${evidenceAction.action}" to render the exact non-empty action output message in the fourth cell`
-		).toContainText(exactText(evidenceAction.message!.trim()));
+		).toHaveText(evidenceAction.message!.trim());
 	} else {
 		throw new Error(
 			`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had no visible message evidence to assert.`
