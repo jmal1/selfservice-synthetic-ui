@@ -36,6 +36,26 @@ interface RunSummary {
 	started_at?: string | null;
 }
 
+interface ActionResultSummary {
+	action: string;
+	status: string;
+	message?: string | null;
+	exit_code: number;
+	duration_ms: number;
+}
+
+interface WorkflowResultSummary {
+	id: string;
+	workflow_name: string;
+	status: string;
+	student_message?: string | null;
+	action_results?: ActionResultSummary[];
+}
+
+interface PodTestingRunDetail extends RunSummary {
+	results?: WorkflowResultSummary[];
+}
+
 // Statuses that represent a still-in-progress run.
 const ACTIVE_STATUSES = new Set(['pending', 'provisioning', 'running']);
 
@@ -43,11 +63,12 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 	meta(testInfo, {
 		title: 'Assessment run results render for instructor',
 		description:
-			'Finds the most recent completed assessment run via GET /api/v1/admin/runs, navigates to ' +
-			'its detail page at /pods/{podId}/testing/runs/{runId}, and asserts that Workflow Results ' +
-			'render with per-action content. Catches broken results rendering, a stalled runner that ' +
-			'never writes results back, or an error boundary on the run detail page. Deliberately ' +
-			'FAILs (does not skip) if no completed runs exist in production.',
+			'Finds the most recent completed assessment run via GET /api/v1/admin/runs, verifies the ' +
+			'pod testing dashboard + history pages, then navigates from /pods/{podId}/testing to the ' +
+			'completed run detail and asserts the workflow/action output content visible to a student. ' +
+			'Catches broken results rendering, a stalled runner that never writes results back, or a ' +
+			'broken dashboard navigation path. Deliberately FAILs (does not skip) if no completed runs ' +
+			'exist in production.',
 		severity: 'warning',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-runner_results_render-fails'
@@ -55,7 +76,6 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 
 	// ── Step 1: get admin runs list via API ────────────────────────────
 	// Use page.request so the call carries the admin session cookies.
-	// Navigate to a real page first so the base URL and cookies are set.
 	await page.goto('/admin/runs');
 
 	const runsResp = await page.request.get('/api/v1/admin/runs', {
@@ -69,9 +89,6 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 	).toBe(200);
 
 	const runs: RunSummary[] = await runsResp.json();
-
-	// Explicit failure (not skip) for empty list: no runs in production means
-	// either the runs API is broken or no student has ever triggered an assessment.
 	expect(
 		runs.length,
 		'GET /api/v1/admin/runs returned an empty list. In production there should always be ' +
@@ -79,15 +96,12 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 			'(unlikely once deployed), or the runs API is returning an empty response incorrectly.'
 	).toBeGreaterThan(0);
 
-	// Sort by started_at descending to find the most recently started run.
 	const sorted = [...runs].sort((a, b) => {
 		const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
 		const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
 		return tb - ta;
 	});
 
-	// Find the most recent completed run. We want a terminal status because
-	// an in-progress run will have no results yet.
 	const completedRun = sorted.find((r) => !ACTIVE_STATUSES.has(r.status));
 	if (!completedRun) {
 		throw new Error(
@@ -97,54 +111,138 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 		);
 	}
 
-	// ── Step 2: navigate to run detail page ────────────────────────────
-	await page.goto(`/pods/${completedRun.pod_id}/testing/runs/${completedRun.id}`);
+	const podId = completedRun.pod_id;
+	const podTestingResp = await page.request.get(`/api/v1/pods/${podId}/testing`, {
+		headers: { accept: 'application/json' },
+		failOnStatusCode: false
+	});
+	expect(
+		podTestingResp.status(),
+		`GET /api/v1/pods/${podId}/testing must return 200 for the dashboard route`
+	).toBe(200);
+	const podTestingDashboard = await podTestingResp.json();
+	expect(
+		Array.isArray(podTestingDashboard?.recent_runs),
+		`GET /api/v1/pods/${podId}/testing did not return a recent_runs array for ${podId}`
+	).toBeTruthy();
+	expect(
+		(podTestingDashboard.recent_runs as RunSummary[]).some((run) => run.id === completedRun.id),
+		`GET /api/v1/pods/${podId}/testing did not include the completed run ${completedRun.id} in recent_runs; ` +
+			'the dashboard is stale or the API returned an incomplete payload.'
+	).toBeTruthy();
 
-	// The "Run Details" heading is the first thing rendered after hydration.
-	// A spinner (LoadingSkeleton) or error card means the page is broken.
+	const historyResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs`, {
+		headers: { accept: 'application/json' },
+		failOnStatusCode: false
+	});
+	expect(
+		historyResp.status(),
+		`GET /api/v1/pods/${podId}/testing/runs must return 200 for the run history route`
+	).toBe(200);
+	const historyRuns = await historyResp.json();
+	expect(
+		Array.isArray(historyRuns),
+		`GET /api/v1/pods/${podId}/testing/runs did not return an array`
+	).toBeTruthy();
+	expect(
+		(historyRuns as RunSummary[]).some((run) => run.id === completedRun.id),
+		`GET /api/v1/pods/${podId}/testing/runs did not include completed run ${completedRun.id}`
+	).toBeTruthy();
+
+	const detailResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs/${completedRun.id}`, {
+		headers: { accept: 'application/json' },
+		failOnStatusCode: false
+	});
+	expect(
+		detailResp.status(),
+		`GET /api/v1/pods/${podId}/testing/runs/${completedRun.id} must return 200`
+	).toBe(200);
+	const detail: PodTestingRunDetail = await detailResp.json();
+	expect(detail.id, `run detail route did not return the expected id ${completedRun.id}`).toBe(completedRun.id);
+	expect(
+		ACTIVE_STATUSES.has(detail.status),
+		`completed run ${completedRun.id} is not in a terminal state; status was ${detail.status}`
+	).toBe(false);
+
+	const workflowWithOutput = (detail.results ?? []).find((result) => {
+		const studentText = result.student_message?.trim() ?? '';
+		const actionText = (result.action_results ?? []).some(
+			(action) => (action.message ?? '').trim().length > 0
+		);
+		return studentText.length > 0 || actionText;
+	});
+	if (!workflowWithOutput) {
+		throw new Error(
+			`No completed workflow result on ${completedRun.id} has non-empty output. ` +
+				`The run is terminal, but the API returned zero student_message/action.message values. ` +
+				`Check the runner worker for empty output content or confirm the wire shape changed.`
+		);
+	}
+
+	// ── Step 2: navigate the real testing dashboard and history pages ───
+	await page.goto(`/pods/${podId}/testing`);
+	await expect(page, 'testing dashboard route should render after navigation').toHaveURL(
+		new RegExp(`^.*\/pods\/${podId}\/testing/?$`),
+		{ timeout: 15_000 }
+	);
+	await expect(
+		page.getByRole('heading', { name: 'Assessments' }),
+		'Assessments heading must be visible on /pods/{podId}/testing'
+	).toBeVisible({ timeout: 15_000 });
+	await expect(
+		page.getByRole('heading', { name: 'Recent Runs' }),
+		'Expected the Recent Runs panel on /pods/{podId}/testing'
+	).toBeVisible({ timeout: 15_000 });
+	await expect(
+		page.getByRole('link', { name: 'View all →' }),
+		'Out-of-date dashboard should link to the run history page'
+	).toHaveAttribute('href', `/pods/${podId}/testing/runs`);
+
+	await page.getByRole('link', { name: 'View all →' }).click();
+	await expect(page, 'run history route should render after clicking View all').toHaveURL(
+		new RegExp(`^.*\/pods\/${podId}\/testing\/runs/?$`),
+		{ timeout: 15_000 }
+	);
+	await expect(
+		page.getByRole('heading', { name: 'Run History' }),
+		'Run History heading must be visible on /pods/{podId}/testing/runs'
+	).toBeVisible({ timeout: 15_000 });
+	const historyRowLink = page.locator(`a[href="/pods/${podId}/testing/runs/${completedRun.id}"]`).first();
+	await expect(
+		historyRowLink,
+		`Run history table must include the completed run ${completedRun.id}`
+	).toBeVisible({ timeout: 15_000 });
+	await historyRowLink.click();
+
+	// ── Step 3: assert the result detail page and workflow/action content ─
+	await expect(page, 'run detail route should render after history navigation').toHaveURL(
+		new RegExp(`^.*\/pods\/${podId}\/testing\/runs\/${completedRun.id}/?$`),
+		{ timeout: 15_000 }
+	);
 	await expect(
 		page.getByRole('heading', { name: 'Run Details' }),
 		'"Run Details" heading must be visible — if missing, the run detail page is showing ' +
 			'a spinner or error boundary instead of the result'
 	).toBeVisible({ timeout: 15_000 });
-
-	// ── Step 3: assert Workflow Results section ─────────────────────────
-	// The "Workflow Results" <section> and its <h2> only render when
-	// run.results && run.results.length > 0. A completed run with zero
-	// results is itself a regression.
-	const resultsHeading = page.getByRole('heading', { name: 'Workflow Results' });
 	await expect(
-		resultsHeading,
-		'"Workflow Results" heading must be visible on a completed run. Its absence means ' +
-			'the run completed but has no result records — the runner may not be writing ' +
-			'results back to the API'
+		page.getByRole('heading', { name: 'Workflow Results' }),
+		'"Workflow Results" heading must be visible on a completed run detail page'
 	).toBeVisible({ timeout: 15_000 });
 
-	// Get the workflow result buttons (each result is rendered as a clickable
-	// button inside a card). Guard against an empty list before acting on it.
-	const workflowSection = page
-		.locator('section')
-		.filter({ has: page.getByRole('heading', { name: 'Workflow Results' }) });
+	const workflowPicker = page
+		.locator('button[aria-expanded]')
+		.filter({ hasText: workflowWithOutput.workflow_name })
+		.first();
+	await expect(
+		workflowPicker,
+		`workflow "${workflowWithOutput.workflow_name}" should be visible on the run detail page`
+	).toBeVisible({ timeout: 15_000 });
+	await workflowPicker.click();
 
-	const workflowButtons = workflowSection.getByRole('button');
-	const workflowCount = await workflowButtons.count();
-	expect(
-		workflowCount,
-		'Workflow Results section must contain at least one expandable result card'
-	).toBeGreaterThan(0);
-
-	// ── Step 4: expand first result, assert action table ───────────────
-	// Click the first workflow card to expand it. The expanded view renders a
-	// <table> with Action / Status / Duration / Message columns.
-	await workflowButtons.first().click();
-
-	// The action-results table only renders after expansion and only when
-	// result.action_results is populated. Locate it by its "Action" column header.
 	const actionTable = page
 		.locator('table')
 		.filter({ has: page.locator('th', { hasText: 'Action' }) })
 		.last();
-
 	await expect(
 		actionTable,
 		'Action results table must appear after expanding a workflow result. ' +
@@ -158,4 +256,14 @@ adminTest('runner_results_render', async ({ authedAdminPage: page }, testInfo) =
 		'Action results table must have at least one row — a completed workflow with zero ' +
 			'action records is a runner data regression'
 	).toBeGreaterThan(0);
+
+	const firstActionMessage = actionRows.first().locator('td').nth(3).textContent();
+	expect(
+		(await firstActionMessage)?.trim().length ?? 0,
+		'Action result message cell must contain the rendered workflow/action output body'
+	).toBeGreaterThan(0);
+	await expect(
+		actionRows.first().locator('td').nth(3),
+		'Expected an actual action output message in the expanded workflow detail to render on the page'
+	).toContainText(/.+/);
 });
