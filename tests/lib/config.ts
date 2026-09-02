@@ -56,7 +56,7 @@ export function expectedFullSuiteCheckCount(
 	if (env.SYNTHETIC_ADMIN_USERNAME) count += 3;
 	if (env.SYNTHETIC_ADMIN_USERNAME && env.SYNTHETIC_ADMIN_PASSWORD) count += 1;
 	if (config.lifecycleEnabled) count += 1;
-	if (config.expectMaintenance) count += 1;
+	if (config.expectMaintenance || !config.lifecycleEnabled) count += 1;
 	return count;
 }
 

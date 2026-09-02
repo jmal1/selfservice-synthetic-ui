@@ -656,12 +656,19 @@ is required at startup; the suite refuses to run rather than silently skip its
 destructive coverage.
 
 `SYNTHETIC_EXPECT_MAINTENANCE` also accepts only `true` or `false` and defaults
-to `false`. When true, the non-destructive maintenance contract check is
-enabled and requires lifecycle checks to be disabled. It asserts the exact
-authenticated API response:
+to `false`. When true, the non-destructive provisioning contract check asserts
+maintenance mode. When false, the same check asserts open provisioning. Both
+modes require lifecycle checks to be disabled. Maintenance mode asserts the
+exact authenticated API response:
 
 ```json
 {"enabled":false,"message":"Provisioning is temporarily unavailable for maintenance."}
+```
+
+Open mode asserts:
+
+```json
+{"enabled":true,"message":"Provisioning is available."}
 ```
 
 With instructor credentials and `SYNTHETIC_TEMPLATE_NAME` configured, the
@@ -670,18 +677,14 @@ current expected check counts are:
 | lifecycle | expected maintenance | expected checks |
 |-----------|----------------------|-----------------|
 | `true`    | `false`              | 21              |
-| `false`   | `false`              | 20              |
+| `false`   | `false`              | 21              |
 | `false`   | `true`               | 21              |
 
 The `true`/`true` combination is rejected. If the optional instructor identity
 is absent, its four statically skipped checks are excluded from the dynamic
 expected count while `admin_identity_configured` remains and fails visibly.
 
-The maintenance check never creates a fixture. If an existing,
-cleanup-eligible pod is available, it verifies that Add VM is gated while
-Delete Pod remains enabled. If none exists, the result is annotated with that
-limitation; the status API, banner, dashboard, and shared provisioning route
-are still checked without weakening their assertions.
+The provisioning contract check never creates a fixture. In maintenance mode, if an existing cleanup-eligible pod is available, it verifies that Add VM is gated while Delete Pod remains enabled. If none exists, the result is annotated with that limitation; the status API, banner, dashboard, and shared provisioning route are still checked without weakening their assertions. In open mode, the same wizard paths must reach enabled final actions without invoking mutations.
 
 Grafana alert (paired with the Go suite's `layer=api`):
 
