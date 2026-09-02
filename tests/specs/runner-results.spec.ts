@@ -10,10 +10,13 @@
 //   1. GET /api/v1/pods returns a visible pod list for the student
 //   2. A terminal run remains attached to a still-active student pod
 //   3. The pod testing dashboard and run detail pages render without errors
-//   4. The "Workflow Results" section shows a retained workflow and action output
+//   4. The "Workflow Results" section shows retained student-visible output
+//      (student_message, and action rows only when the API returns them)
 //
 // Hollowness guard: the spec explicitly FAILs (does NOT skip) if there are no
-// student-visible terminal runs or no retained result text to render.
+// student-visible terminal runs or no retained student_message / action text.
+// Note: the student testing API strips action_results; student_message alone is
+// sufficient evidence against that live contract.
 
 import { expect, test } from '../lib/fixtures.ts';
 import { parsePodSummaries } from '../lib/maintenance.ts';
@@ -151,14 +154,21 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 				const hasActionResults = actionResults.length > 0;
 				const hasStudentText = (result.student_message ?? '').trim().length > 0;
 				const hasActionMessage = actionResults.some((action) => (action.message ?? '').trim().length > 0);
-				return hasActionResults && (hasStudentText || hasActionMessage);
+				// Student GET /pods/{id}/testing/runs/{runId} deliberately strips
+				// action_results (selfservice-api handlers/testing.go). Student-visible
+				// retained output is therefore student_message and/or any action rows
+				// the API still returns. Do not require action_results when a non-empty
+				// student_message is present — that was an impossible hollowness guard
+				// against the live student API contract.
+				return hasStudentText || (hasActionResults && hasActionMessage);
 			});
 			if (!workflowWithOutput) continue;
 
 			const evidenceAction = (workflowWithOutput.action_results ?? []).find(
 				(action) => (action.message ?? '').trim().length > 0
 			);
-			const evidenceText = (workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
+			const evidenceText =
+				(workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
 			if (!evidenceText) continue;
 
 			return { podId, run, workflowWithOutput, evidenceAction, evidenceText, triedCount };
@@ -168,7 +178,7 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 			`No terminal assessment run with actionable student-visible workflow output remained attached to a student-visible pod after inspecting ` +
 				`${triedCount}/${candidateRuns.length} candidate runs from the first ${studentPods.length} student-owned pods. ` +
 				`Each candidate either had pod routes return 404 after completion (destroyed smoke pod), it was still active, or it ` +
-				`did not retain non-empty workflow/action evidence in the testing API.`
+				`did not retain non-empty student_message (or action message when action_results are returned) in the testing API.`
 		);
 	};
 
@@ -176,8 +186,8 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 	const { podId, run: completedRun, workflowWithOutput, evidenceAction, evidenceText } = retainedRun;
 	if (!workflowWithOutput || !evidenceText) {
 		throw new Error(
-			`No completed workflow result on ${completedRun.id} retains at least one action result and ` +
-				`non-empty student/action output. The run is terminal and the pod is still visible to the student, ` +
+			`No completed workflow result on ${completedRun.id} retains non-empty student_message ` +
+				`(or action message when action_results are present). The run is terminal and the pod is still visible to the student, ` +
 				`but the API returned no actionable workflow output to render in the testing dashboard/detail UI.`
 		);
 	}
@@ -239,44 +249,60 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 	).toBeVisible({ timeout: 15_000 });
 	await workflowPicker.click();
 
-	const actionTable = page
-		.locator('table')
-		.filter({ has: page.locator('th', { hasText: 'Action' }) })
-		.last();
-	await expect(
-		actionTable,
-		'Action results table must appear after expanding a workflow result. Its absence means result.action_results is null/empty or the expand click failed'
-	).toBeVisible({ timeout: 10_000 });
+	const actionResults = workflowWithOutput.action_results ?? [];
+	if (actionResults.length > 0) {
+		const actionTable = page
+			.locator('table')
+			.filter({ has: page.locator('th', { hasText: 'Action' }) })
+			.last();
+		await expect(
+			actionTable,
+			'Action results table must appear after expanding a workflow result when the API returned action_results'
+		).toBeVisible({ timeout: 10_000 });
 
-	const actionRows = actionTable.locator('tbody tr');
-	const rowCount = await actionRows.count();
-	expect(
-		rowCount,
-		'Action results table must have at least one row — a completed workflow with zero action records is a runner data regression'
-	).toBeGreaterThan(0);
+		const actionRows = actionTable.locator('tbody tr');
+		const rowCount = await actionRows.count();
+		expect(
+			rowCount,
+			'Action results table must have at least one row — a completed workflow with zero action records is a runner data regression'
+		).toBeGreaterThan(0);
 
-	const workflowText = workflowWithOutput.student_message?.trim();
-	if (workflowText) {
-		const workflowMessage = workflowPicker.getByText(workflowText, { exact: true });
+		const workflowText = workflowWithOutput.student_message?.trim();
+		if (workflowText) {
+			const workflowMessage = workflowPicker.getByText(workflowText, { exact: true });
+			await expect(
+				workflowMessage,
+				`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message as its own paragraph`
+			).toHaveText(workflowText);
+		} else if (evidenceAction) {
+			const actionRow = actionRows
+				.filter({ has: page.getByText(evidenceAction.action, { exact: true }) })
+				.first();
+			await expect(
+				actionRow.locator('td').nth(0),
+				`Expected the "${evidenceAction.action}" row to render the exact action name in the first cell`
+			).toHaveText(evidenceAction.action);
+			await expect(
+				actionRow.locator('td').nth(3),
+				`Expected action "${evidenceAction.action}" to render the exact non-empty action output message in the fourth cell`
+			).toHaveText(evidenceAction.message!.trim());
+		} else {
+			throw new Error(
+				`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had no visible message evidence to assert.`
+			);
+		}
+	} else {
+		const workflowText = workflowWithOutput.student_message?.trim();
+		if (!workflowText) {
+			throw new Error(
+				`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} returned no action_results ` +
+					`(expected for student role) and no student_message to assert on the detail page.`
+			);
+		}
+		const workflowMessage = page.getByText(workflowText, { exact: true }).first();
 		await expect(
 			workflowMessage,
-			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message as its own paragraph`
-		).toHaveText(workflowText);
-	} else if (evidenceAction) {
-		const actionRow = actionRows
-			.filter({ has: page.getByText(evidenceAction.action, { exact: true }) })
-			.first();
-		await expect(
-			actionRow.locator('td').nth(0),
-			`Expected the "${evidenceAction.action}" row to render the exact action name in the first cell`
-		).toHaveText(evidenceAction.action);
-		await expect(
-			actionRow.locator('td').nth(3),
-			`Expected action "${evidenceAction.action}" to render the exact non-empty action output message in the fourth cell`
-		).toHaveText(evidenceAction.message!.trim());
-	} else {
-		throw new Error(
-			`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had no visible message evidence to assert.`
-		);
+			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message on the run detail page`
+		).toBeVisible({ timeout: 10_000 });
 	}
 });
