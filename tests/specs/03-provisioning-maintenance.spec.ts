@@ -1,6 +1,7 @@
 import { test, expect } from '../lib/fixtures.ts';
 import { syntheticConfig } from '../lib/config.ts';
 import {
+	AVAILABLE_MESSAGE,
 	expectControlsUnavailableOrDisabled,
 	MAINTENANCE_MESSAGE,
 	parsePodSummaries,
@@ -8,19 +9,29 @@ import {
 } from '../lib/maintenance.ts';
 import { meta } from '../lib/synthetic.ts';
 
+const maintenanceBanner = (page: import('@playwright/test').Page) =>
+	page.locator('aside[role="alert"][aria-labelledby="provisioning-maintenance-title"]');
+
 test.skip(
-	!syntheticConfig.expectMaintenance,
-	'SYNTHETIC_EXPECT_MAINTENANCE is false; maintenance UI contract is not expected'
+	syntheticConfig.lifecycleEnabled && !syntheticConfig.expectMaintenance,
+	'SYNTHETIC_LIFECYCLE_ENABLED=true; provisioning contract not registered in lifecycle mode'
 );
 
 test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo) => {
+	const expectMaintenance = syntheticConfig.expectMaintenance;
+
 	meta(testInfo, {
-		title: 'Provisioning maintenance controls are safe',
-		description:
-			'Authenticates as the synthetic student, verifies the exact provisioning status API and ' +
-			'maintenance message, and proves pod creation, blueprint deployment, and add-VM controls ' +
-			'are disabled or unavailable without invoking any mutation. When an existing cleanup-eligible ' +
-			'pod is present, also proves Delete Pod remains enabled.',
+		title: expectMaintenance
+			? 'Provisioning maintenance controls are safe'
+			: 'Open provisioning contract is healthy',
+		description: expectMaintenance
+			? 'Authenticates as the synthetic student, verifies the exact provisioning status API and ' +
+				'maintenance message, and proves pod creation, blueprint deployment, and add-VM controls ' +
+				'are disabled or unavailable without invoking any mutation. When an existing cleanup-eligible ' +
+				'pod is present, also proves Delete Pod remains enabled.'
+			: 'Authenticates as the synthetic student, verifies provisioning status reports enabled with the ' +
+				'available message, confirms maintenance UI is absent, and proves pod-create, blueprint-deploy, ' +
+				'and add-VM wizards reach enabled final actions without invoking any mutation.',
 		severity: 'warning',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-provisioning_maintenance_contract-fails'
@@ -48,49 +59,83 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 	).toBe(200);
 	expect(
 		await statusResponse.json(),
-		'maintenance status must match the coordinated API contract exactly'
-	).toEqual({ enabled: false, message: MAINTENANCE_MESSAGE });
+		expectMaintenance
+			? 'maintenance status must match the coordinated API contract exactly'
+			: 'open provisioning status must match the coordinated API contract exactly'
+	).toEqual(
+		expectMaintenance
+			? { enabled: false, message: MAINTENANCE_MESSAGE }
+			: { enabled: true, message: AVAILABLE_MESSAGE }
+	);
 
 	await page.goto('/');
-	const dashboardBanner = page.locator(
-		'aside[role="alert"][aria-labelledby="provisioning-maintenance-title"]'
-	);
-	await expect(dashboardBanner, 'semantic provisioning maintenance alert must be visible').toBeVisible({
-		timeout: 15_000
-	});
-	await expect(
-		dashboardBanner.locator('#provisioning-maintenance-title'),
-		'maintenance alert must have the stable accessible title'
-	).toHaveText('New deployments are paused');
-	await expect(
-		dashboardBanner.getByText(MAINTENANCE_MESSAGE, { exact: true }),
-		'maintenance alert must show the API-provided message'
-	).toBeVisible();
-	await expect(
-		dashboardBanner.getByRole('button', {
-			name: 'Check provisioning availability again',
-			exact: true
-		})
-	).toBeVisible();
+	if (expectMaintenance) {
+		const dashboardBanner = maintenanceBanner(page);
+		await expect(
+			dashboardBanner,
+			'semantic provisioning maintenance alert must be visible'
+		).toBeVisible({
+			timeout: 15_000
+		});
+		await expect(
+			dashboardBanner.locator('#provisioning-maintenance-title'),
+			'maintenance alert must have the stable accessible title'
+		).toHaveText('New deployments are paused');
+		await expect(
+			dashboardBanner.getByText(MAINTENANCE_MESSAGE, { exact: true }),
+			'maintenance alert must show the API-provided message'
+		).toBeVisible();
+		await expect(
+			dashboardBanner.getByRole('button', {
+				name: 'Check provisioning availability again',
+				exact: true
+			})
+		).toBeVisible();
+	} else {
+		await expect(
+			maintenanceBanner(page),
+			'maintenance alert must not mount when provisioning is open'
+		).toHaveCount(0);
+		await expect(
+			page.getByRole('link', { name: 'Deploy VM', exact: true }).first(),
+			'dashboard must expose an actionable Deploy VM entry when provisioning is open'
+		).toBeVisible({ timeout: 15_000 });
+	}
 
 	const dashboardProvisioningControls = page
 		.getByRole('link', { name: /deploy vm|create pod|new environment/i })
 		.or(page.getByRole('button', { name: /deploy vm|create pod|new environment/i }));
-	await expectControlsUnavailableOrDisabled(
-		dashboardProvisioningControls,
-		'dashboard pod-create controls'
-	);
+	if (expectMaintenance) {
+		await expectControlsUnavailableOrDisabled(
+			dashboardProvisioningControls,
+			'dashboard pod-create controls'
+		);
+	} else {
+		await expect(
+			dashboardProvisioningControls.first(),
+			'dashboard pod-create controls must be actionable when provisioning is open'
+		).toBeVisible({ timeout: 15_000 });
+	}
 
 	// Walk the custom-environment wizard to its final action without submitting.
 	await page.goto('/pods/new');
-	await expect(
-		page.locator('aside[role="alert"][aria-labelledby="provisioning-maintenance-title"]'),
-		'maintenance alert must remain visible on the provisioning route'
-	).toBeVisible({ timeout: 15_000 });
+	if (expectMaintenance) {
+		await expect(
+			maintenanceBanner(page),
+			'maintenance alert must remain visible on the provisioning route'
+		).toBeVisible({ timeout: 15_000 });
+	} else {
+		await expect(
+			maintenanceBanner(page),
+			'maintenance alert must not mount on the provisioning route when open'
+		).toHaveCount(0);
+	}
 	await page.getByRole('button', { name: /^next$/i }).click();
 	await page.getByRole('button', { name: /custom environment/i }).click();
 	await page.getByRole('button', { name: /^next$/i }).click();
-	await page.getByLabel(/environment name/i).fill(`maintenance-create-${Date.now()}`);
+	await page
+		.getByLabel(/environment name/i)
+		.fill(`${expectMaintenance ? 'maintenance' : 'open'}-create-${Date.now()}`);
 	await page.getByRole('button', { name: /^next$/i }).click();
 	const customTemplate = page.getByRole('button', { name: 'Increase quantity', exact: true }).first();
 	await expect(
@@ -100,10 +145,18 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 	await customTemplate.click();
 	await page.getByRole('button', { name: /^next$/i }).click();
 	await page.getByRole('button', { name: /^next$/i }).click();
-	await expect(
-		page.getByRole('button', { name: /^deploy environment$/i }),
-		'final pod-create action must be natively disabled during maintenance'
-	).toBeDisabled();
+	const deployEnvironment = page.getByRole('button', { name: /^deploy environment$/i });
+	if (expectMaintenance) {
+		await expect(
+			deployEnvironment,
+			'final pod-create action must be natively disabled during maintenance'
+		).toBeDisabled();
+	} else {
+		await expect(
+			deployEnvironment,
+			'final pod-create action must be enabled when provisioning is open'
+		).toBeEnabled();
+	}
 
 	// Walk the blueprint wizard independently so the final button, rather than
 	// the harmless mode selector with the same name, is what we assert.
@@ -111,21 +164,29 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 	await page.getByRole('button', { name: /^next$/i }).click();
 	await page.getByRole('button', { name: /deploy blueprint/i }).click();
 	await page.getByRole('button', { name: /^next$/i }).click();
-	const blueprintChoices = page
-		.locator('button')
-		.filter({ has: page.locator('h3') });
+	const blueprintChoices = page.locator('button').filter({ has: page.locator('h3') });
 	await expect(
 		blueprintChoices.first(),
 		'blueprint provisioning wizard must expose at least one active blueprint'
 	).toBeVisible({ timeout: 15_000 });
 	await blueprintChoices.first().click();
 	await page.getByRole('button', { name: /^next$/i }).click();
-	await page.getByLabel(/environment name/i).fill(`maintenance-blueprint-${Date.now()}`);
+	await page
+		.getByLabel(/environment name/i)
+		.fill(`${expectMaintenance ? 'maintenance' : 'open'}-blueprint-${Date.now()}`);
 	await page.getByRole('button', { name: /^next$/i }).click();
-	await expect(
-		page.getByRole('button', { name: /^deploy blueprint$/i }),
-		'final blueprint-deploy action must be natively disabled during maintenance'
-	).toBeDisabled();
+	const deployBlueprint = page.getByRole('button', { name: /^deploy blueprint$/i });
+	if (expectMaintenance) {
+		await expect(
+			deployBlueprint,
+			'final blueprint-deploy action must be natively disabled during maintenance'
+		).toBeDisabled();
+	} else {
+		await expect(
+			deployBlueprint,
+			'final blueprint-deploy action must be enabled when provisioning is open'
+		).toBeEnabled();
+	}
 
 	expect(
 		mutationRequests,
@@ -136,7 +197,12 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 		headers: { accept: 'application/json' },
 		failOnStatusCode: false
 	});
-	expect(podsResponse.status(), 'GET /api/v1/pods must remain readable during maintenance').toBe(200);
+	expect(
+		podsResponse.status(),
+		expectMaintenance
+			? 'GET /api/v1/pods must remain readable during maintenance'
+			: 'GET /api/v1/pods must remain readable when provisioning is open'
+	).toBe(200);
 	const pods = parsePodSummaries(await podsResponse.json());
 	const addVmPod = pods.find((pod) =>
 		['active', 'provisioning'].includes(pod.status?.toLowerCase() ?? '')
@@ -147,16 +213,31 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 
 	if (addVmPod) {
 		await page.goto(`/pods/${addVmPod.id}`);
-		await expect(
-			page.getByRole('link', { name: /^add vm$/i }),
-			'existing-pod Add VM entry must be aria-disabled during maintenance'
-		).toHaveAttribute('aria-disabled', 'true');
+		const addVmLink = page.getByRole('link', { name: /^add vm$/i });
+		if (expectMaintenance) {
+			await expect(
+				addVmLink,
+				'existing-pod Add VM entry must be aria-disabled during maintenance'
+			).toHaveAttribute('aria-disabled', 'true');
+		} else {
+			await expect(
+				addVmLink,
+				'existing-pod Add VM entry must be actionable when provisioning is open'
+			).not.toHaveAttribute('aria-disabled', 'true');
+		}
 
 		await page.goto(`/pods/new?pod=${encodeURIComponent(addVmPod.id)}`);
-		await expect(
-			page.locator('aside[role="alert"][aria-labelledby="provisioning-maintenance-title"]'),
-			'maintenance alert must remain visible on the add-VM route'
-		).toBeVisible({ timeout: 15_000 });
+		if (expectMaintenance) {
+			await expect(
+				maintenanceBanner(page),
+				'maintenance alert must remain visible on the add-VM route'
+			).toBeVisible({ timeout: 15_000 });
+		} else {
+			await expect(
+				maintenanceBanner(page),
+				'maintenance alert must not mount on the add-VM route when open'
+			).toHaveCount(0);
+		}
 		const addVmTemplate = page
 			.getByRole('button', { name: 'Increase quantity', exact: true })
 			.first();
@@ -167,19 +248,30 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 		await addVmTemplate.click();
 		await page.getByRole('button', { name: /^next$/i }).click();
 		await page.getByRole('button', { name: /^next$/i }).click();
-		await expect(
-			page.getByRole('button', { name: /^add vms$/i }),
-			'final add-VM action must be natively disabled during maintenance'
-		).toBeDisabled();
+		const addVms = page.getByRole('button', { name: /^add vms$/i });
+		if (expectMaintenance) {
+			await expect(
+				addVms,
+				'final add-VM action must be natively disabled during maintenance'
+			).toBeDisabled();
+		} else {
+			await expect(
+				addVms,
+				'final add-VM action must be enabled when provisioning is open'
+			).toBeEnabled();
+		}
 	} else {
 		recordMaintenanceLimitation(
 			testInfo,
-			'No active/provisioning pod existed, so this run could not enter the add-VM wizard. ' +
-				'No pod was created because lifecycle mutations are forbidden during maintenance.'
+			expectMaintenance
+				? 'No active/provisioning pod existed, so this run could not enter the add-VM wizard. ' +
+						'No pod was created because lifecycle mutations are forbidden during maintenance.'
+				: 'No active/provisioning pod existed, so this run could not enter the add-VM wizard. ' +
+						'No pod was created because lifecycle mutations remain disabled for this suite.'
 		);
 	}
 
-	if (cleanupPod) {
+	if (cleanupPod && expectMaintenance) {
 		await page.goto(`/pods/${cleanupPod.id}`);
 		const deletePod = page.getByRole('button', { name: /^delete pod$/i });
 		await expect(
@@ -208,7 +300,7 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 				'at least one Delete VM control must be visible when VM cleanup controls exist'
 			).toBeGreaterThan(0);
 		}
-	} else {
+	} else if (!cleanupPod && expectMaintenance) {
 		recordMaintenanceLimitation(
 			testInfo,
 			'No cleanup-eligible pod existed, so this run could not assert Delete Pod or Delete VM. ' +
@@ -218,6 +310,6 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 
 	expect(
 		mutationRequests,
-		`maintenance check must not invoke provisioning mutations: ${mutationRequests.join(', ')}`
+		`provisioning contract check must not invoke provisioning mutations: ${mutationRequests.join(', ')}`
 	).toEqual([]);
 });

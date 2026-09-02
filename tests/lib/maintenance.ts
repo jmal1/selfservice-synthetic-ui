@@ -3,6 +3,8 @@ import type { Locator, TestInfo } from '@playwright/test';
 export const MAINTENANCE_MESSAGE =
 	'Provisioning is temporarily unavailable for maintenance.';
 
+export const AVAILABLE_MESSAGE = 'Provisioning is available.';
+
 export interface ControlState {
 	present: boolean;
 	nativeDisabled?: boolean;
