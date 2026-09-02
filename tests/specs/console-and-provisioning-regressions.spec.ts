@@ -126,7 +126,7 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 	meta(testInfo, {
 		title: 'Connected console capture target keeps browser keyboard focus',
 		description:
-			'Loads the real console UI with only the WMKS transport stubbed as connected, then proves the persistent #console-canvas capture target receives physical Playwright keyboard events before and after the Text Input toolbar and after a nested-canvas reconnect. Paste and Text Input remain available. This intentionally stops at browser event delivery; the supervised live gate still owns guest-visible typing.',
+			'Loads the real console UI with only the WMKS transport stubbed as connected, then proves the persistent #console-canvas capture target receives physical Playwright keyboard events before and after the Text Input toolbar and after a nested-canvas reconnect. Paste and Text Input remain available. Supporting evidence only: DOM focus and canvas keydowns are not Gate B2 acceptance. console_guest_physical_keyboard_nonce owns the KeyboardManager2 nonce path; the supervised live gate still owns in-guest GuestOps readback.',
 		severity: 'warning',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#runbook'
@@ -134,7 +134,7 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 	testInfo.annotations.push({
 		type: 'console-coverage-limit',
 		description:
-			'Automated coverage proves browser physical keys reach the WMKS capture target in #console-canvas, including after the SDK recreates its nested canvas. The supervised live gate must confirm physical typing appears in a connected guest framebuffer.'
+			'Supporting evidence only: browser physical keys reach the WMKS capture target in #console-canvas, including after the SDK recreates its nested canvas. Gate B2 (console_guest_physical_keyboard_nonce) owns KeyboardManager2 nonce delivery. In-guest GuestOps readback remains blocked on a selfservice-api guest-exec/guest-file contract.'
 	});
 
 	await installWmksTransportStub(page);

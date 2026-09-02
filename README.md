@@ -16,7 +16,8 @@ Authentik OIDC redirect dance.
 | `create-and-destroy-pod.spec.ts` | UI creates a synthetic pod, waits for "ready", destroys it.        |
 | `03-provisioning-maintenance.spec.ts` | Reads provisioning status and verifies maintenance UI controls without mutations. |
 | `workflow-list.spec.ts`       | `/admin/workflows` 403 for non-admins (synthetic is a student role)  |
-| `webmks-console.spec.ts`      | WebMKS console iframe opens + WebSocket connects                     |
+| `console-and-provisioning-regressions.spec.ts` | Supporting WMKS canvas keyboard delivery + provisioning banner stability |
+| `console-guest-keyboard-nonce.spec.ts` | Gate B2: physical nonce through KeyboardManager2 (Ubuntu) + Windows control |
 | `healthz.spec.ts`             | Anonymous `/healthz` returns 200 with `status: ok`                   |
 | `zz-logout.spec.ts`           | Sign out terminates the session and does not silently re-auth (runs last) |
 
@@ -676,9 +677,9 @@ current expected check counts are:
 
 | lifecycle | expected maintenance | expected checks |
 |-----------|----------------------|-----------------|
-| `true`    | `false`              | 21              |
-| `false`   | `false`              | 21              |
-| `false`   | `true`               | 21              |
+| `true`    | `false`              | 23              |
+| `false`   | `false`              | 23              |
+| `false`   | `true`               | 23              |
 
 The `true`/`true` combination is rejected. If the optional instructor identity
 is absent, its four statically skipped checks are excluded from the dynamic
