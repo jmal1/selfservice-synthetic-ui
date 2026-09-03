@@ -3,13 +3,13 @@
 //
 // Why this file exists
 // --------------------
-// image-library, template-wizard-iso and runner-results all need an
-// instructor-role session, and all three call `adminTest.skip()` when
+// image-library, both template-wizard specs and runner-results all need an
+// instructor-role session, and all five checks call `adminTest.skip()` when
 // SYNTHETIC_ADMIN_USERNAME is unset. The Pushgateway reporter deliberately
 // does not push a result for a skipped test (pushgateway-reporter.ts), and
 // pushResults PUTs the whole metric group, which Pushgateway replaces
 // wholesale. So an environment without instructor credentials does not get
-// three RED checks - it gets three checks that DO NOT EXIST.
+// five RED checks - it gets five checks that DO NOT EXIST.
 //
 // Every alert we have is shaped `1 - crucible_synthetic_ui_check_success > 0`,
 // which cannot match a series that is absent. The board would read a clean
@@ -23,7 +23,7 @@
 //
 // severity=warning on purpose: lost coverage is a weekday fix, not a page.
 // And a fresh environment that has never configured an instructor account
-// gets ONE clearly-named check telling it what to set, rather than three
+// gets ONE clearly-named check telling it what to set, rather than five
 // confusingly absent ones.
 
 import { test, expect } from '@playwright/test';
@@ -51,14 +51,14 @@ test('admin_identity_configured', async ({}, testInfo) => {
 	expect(
 		Boolean(username && password),
 		'SYNTHETIC_ADMIN_USERNAME / SYNTHETIC_ADMIN_PASSWORD are not set, so the instructor-role ' +
-			'UI checks (image_library_loads, template_wizard_iso_option, runner_results_render) are ' +
+			'UI checks (image library, template wizard, and runner results) are ' +
 			'skipping and pushing no metrics. Their absence is invisible to every alert we have. ' +
 			'Configure both in /opt/synthetic-ui/secrets/env on netbirdv01.'
 	).toBe(true);
 
 	// Credentials being present is necessary but not sufficient: if the OIDC
-	// login failed, 01-auth-admin.spec.ts goes red but the three dependent
-	// specs fail with confusing "heading not visible" errors instead. Assert
+	// login failed, 01-auth-admin.spec.ts goes red but the five dependent
+	// checks fail with confusing "heading not visible" errors instead. Assert
 	// the saved session actually exists so this check names the real cause.
 	const statePath = adminStorageStatePath();
 	expect(
