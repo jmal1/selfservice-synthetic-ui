@@ -43,7 +43,7 @@ async function runPhysicalNonceGate(
 	await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
 	const canvasContainer = page.locator('#console-canvas');
-	const pasteButton = page.getByTitle('Paste clipboard into VM (Ctrl+Shift+V)');
+	const pasteButton = page.getByTitle('Paste clipboard into VM (Ctrl+V)');
 	const textInputButton = page.getByTitle('Open text input panel for pasting into VM');
 	await expect(canvasContainer.locator('canvas')).toBeVisible();
 	await expect(pasteButton).toBeEnabled();
