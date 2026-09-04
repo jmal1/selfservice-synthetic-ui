@@ -160,7 +160,7 @@ test('console_canvas_keeps_physical_keyboard_delivery', async (
 
 	const canvasContainer = page.locator('#console-canvas');
 	const canvas = canvasContainer.locator('canvas');
-	const pasteButton = page.getByTitle('Paste clipboard into VM (Ctrl+Shift+V)');
+	const pasteButton = page.getByTitle('Paste clipboard into VM (Ctrl+V)');
 	const textInputButton = page.getByTitle('Open text input panel for pasting into VM');
 	await expect(canvas).toBeVisible();
 	await expect(pasteButton).toBeEnabled();
