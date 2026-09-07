@@ -156,6 +156,10 @@ test('Gate B2 spec types physically and never uses Paste, fill, or insertText', 
 	expect(spec).not.toMatch(/sendInputString\(/);
 	expect(lib).toContain('page.keyboard.press');
 	expect(lib).toContain('wmksData: { _keyboardManager: keyboardManagerProxy }');
+	// Stub must mirror SDK this.element.bind("keydown.wmks") — otherwise UI
+	// synth onto #console-canvas never reaches KeyboardManager2 (Gate B2 red).
+	expect(lib).toContain("container.addEventListener('keydown'");
+	expect(lib).toContain('keyboardManagerProxy.onKeyDown(event)');
 });
 
 test('existing canvas check stays supporting evidence, not Gate B2 acceptance', () => {
