@@ -99,12 +99,16 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 				);
 			}
 			const dashboard = await dashboardResp.json();
-			if (!Array.isArray(dashboard?.recent_runs)) {
+			// API encodes a nil Go slice as JSON null (GetRecentRunsForPod with
+			// zero rows). UI already uses `recent_runs ?? []`; treat null the
+			// same and keep scanning other student pods for a retained run.
+			const recentRuns = dashboard?.recent_runs ?? [];
+			if (!Array.isArray(recentRuns)) {
 				throw new Error(
 					`GET /api/v1/pods/${podId}/testing returned a non-array recent_runs payload for a student-owned pod`
 				);
 			}
-			for (const candidate of (dashboard.recent_runs as RunSummary[]).slice(0, 25)) {
+			for (const candidate of (recentRuns as RunSummary[]).slice(0, 25)) {
 				if (!candidate?.id || ACTIVE_STATUSES.has((candidate.status ?? '').toLowerCase())) continue;
 				candidateRuns.push({ podId, run: candidate });
 				if (candidateRuns.length >= 25) break;
