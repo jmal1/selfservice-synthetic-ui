@@ -3,8 +3,9 @@
 // `console_canvas_keeps_physical_keyboard_delivery` is supporting evidence that
 // the persistent #console-canvas capture target can receive browser keydowns.
 // That is NOT acceptance. Acceptance is a unique nonce observed on the
-// guest-bound KeyboardManager2 path (the live CoreWMKS object the UI must
-// forward svelte:window keydown/keypress/keyup to while connected).
+// guest-bound KeyboardManager2 path (the live CoreWMKS object). The UI
+// preventDefaults page keys and re-dispatches synth KeyboardEvents onto
+// #console-canvas so the SDK's keydown.wmks bind (this.element) still runs.
 //
 // True in-guest readback (VMware GuestOps cat/type of a nonce file) is a
 // separate selfservice-api contract. This repo must not invent that API.
@@ -312,6 +313,22 @@ function keyboardManager2StubSource(guestOs: GuestOs): string {
 							};
 							mountCanvas();
 
+							// Mirror CoreWMKS connectEvents: this.element.bind("keydown.wmks", …)
+							// → _keyboardManager.onKeyDown. UI synth dispatches onto #console-canvas
+							// (this.element); without this bind, Gate B2 only sees canvas spies.
+							const onWidgetKeydown = (event) => {
+								keyboardManagerProxy.onKeyDown(event);
+							};
+							const onWidgetKeyup = (event) => {
+								keyboardManagerProxy.onKeyUp(event);
+							};
+							const onWidgetKeypress = (event) => {
+								keyboardManagerProxy.onKeyPress(event);
+							};
+							container.addEventListener('keydown', onWidgetKeydown);
+							container.addEventListener('keyup', onWidgetKeyup);
+							container.addEventListener('keypress', onWidgetKeypress);
+
 							const instance = {
 								wmksData: { _keyboardManager: keyboardManagerProxy },
 								_keyboardManager: keyboardManagerProxy,
@@ -334,7 +351,11 @@ function keyboardManager2StubSource(guestOs: GuestOs): string {
 									sendKeyCodesCalls.push(keys);
 								},
 								disconnect() {},
-								destroy() {}
+								destroy() {
+									container.removeEventListener('keydown', onWidgetKeydown);
+									container.removeEventListener('keyup', onWidgetKeyup);
+									container.removeEventListener('keypress', onWidgetKeypress);
+								}
 							};
 
 							window.__wmksStub = {

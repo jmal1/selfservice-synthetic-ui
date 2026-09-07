@@ -3,11 +3,10 @@
 // console_canvas_keeps_physical_keyboard_delivery, which remains supporting
 // evidence only (canvas / DOM focus is not acceptance).
 //
-// Depends conceptually on jmal1/selfservice-ui#59 (svelte:window keydown /
-// keypress / keyup forwarded to wmks.wmksData._keyboardManager while
-// status==='connected'; keys dropped when disconnected). This suite does not
-// add a third dependent API layer: GuestOps readback is documented, not
-// implemented here.
+// Depends on the UI's #console-canvas synth path (selfservice-ui WMKSConsole:
+// page capture → preventDefault → dispatchEvent on #console-canvas so the
+// SDK keydown.wmks bind runs). The stub mirrors that bind. GuestOps readback
+// is documented, not implemented here.
 
 import { type Page, type TestInfo } from '@playwright/test';
 import { test, expect } from '../lib/fixtures.ts';
