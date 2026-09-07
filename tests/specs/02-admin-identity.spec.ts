@@ -36,7 +36,7 @@ test('admin_identity_configured', async ({}, testInfo) => {
 		title: 'Instructor synthetic identity is configured',
 		description:
 			'Reports whether an instructor-role account is configured for the UI synthetic suite. ' +
-			'When it is not, the image library, template wizard and run results checks skip and push ' +
+			'When it is not, the image library, template wizard, authoring, and run results checks skip and push ' +
 			'NO metrics at all, so their absence cannot trigger any alert and the admin UI silently ' +
 			'stops being tested. Set SYNTHETIC_ADMIN_USERNAME and SYNTHETIC_ADMIN_PASSWORD in the ' +
 			'secrets env file on netbirdv01 to restore that coverage.',
@@ -51,7 +51,7 @@ test('admin_identity_configured', async ({}, testInfo) => {
 	expect(
 		Boolean(username && password),
 		'SYNTHETIC_ADMIN_USERNAME / SYNTHETIC_ADMIN_PASSWORD are not set, so the instructor-role ' +
-			'UI checks (image library, template wizard, and runner results) are ' +
+			'UI checks (image library, template wizard, authoring, and runner results) are ' +
 			'skipping and pushing no metrics. Their absence is invisible to every alert we have. ' +
 			'Configure both in /opt/synthetic-ui/secrets/env on netbirdv01.'
 	).toBe(true);
