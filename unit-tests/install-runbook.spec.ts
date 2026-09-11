@@ -1,0 +1,809 @@
+/**
+ * Load-bearing contract tests for the atomic host install runbook in README.md.
+ *
+ * These tests exist to prevent regressions introduced by PR #16 (live-host
+ * rollout blocker):
+ *   1. /opt/synthetic-ui/app/scripts must be created before the wrapper is
+ *      installed there (the directory does not exist on first migration).
+ *   2. WRAPPER_STAGE must be removed in cleanup together with the other staged
+ *      files so /tmp is not left with a stale privileged artefact.
+ *
+ * Additional tests cover:
+ *   - Windows staging: core.autocrlf=false configured before checkout (LF bytes)
+ *   - Windows staging: CR byte rejection for all three staged text assets
+ *   - Host preflight: bash -n syntax check ordered after checksums, before install
+ *   - Install mode: SHA tag → pinned upgrade vs immutable digest → first-migration retry
+ *   - Digest retry: validate_runtime + docker image inspect + Compose resolve proofs
+ *   - Invalid pin format: fail closed with exit 1
+ *   - Host preflight: recursively repair report/runs/results for UID 1001
+ *   - Bash wrapper: host UID writability is not confused with container UID access
+ *   - Pinned rollback: direct exact-image canary without legacy wrapper/retention
+ */
+import { test, expect } from '@playwright/test';
+import { spawnSync } from 'node:child_process';
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	symlinkSync,
+	writeFileSync
+} from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { materializeSandboxedWrapper } from './wrapper-test-helpers.ts';
+
+function loadReadme(): string {
+	return readFileSync(join(process.cwd(), 'README.md'), 'utf8');
+}
+
+/**
+ * Extract a fenced bash code block from the README that contains the given
+ * anchor string. Returns the lines inside the fence.
+ */
+function extractBashBlock(readme: string, anchor: string): string[] {
+	const lines = readme.split('\n');
+	let inBlock = false;
+	const block: string[] = [];
+	for (const line of lines) {
+		if (!inBlock && /^```bash/.test(line)) {
+			inBlock = true;
+			block.length = 0;
+			continue;
+		}
+		if (inBlock && /^```/.test(line)) {
+			inBlock = false;
+			if (block.some((l) => l.includes(anchor))) {
+				return block;
+			}
+			block.length = 0;
+			continue;
+		}
+		if (inBlock) {
+			block.push(line);
+		}
+	}
+	return [];
+}
+
+/**
+ * Extract a fenced powershell code block from the README that contains the
+ * given anchor string. Returns the lines inside the fence.
+ */
+function extractPowerShellBlock(readme: string, anchor: string): string[] {
+	const lines = readme.split('\n');
+	let inBlock = false;
+	const block: string[] = [];
+	for (const line of lines) {
+		if (!inBlock && /^```powershell/.test(line)) {
+			inBlock = true;
+			block.length = 0;
+			continue;
+		}
+		if (inBlock && /^```/.test(line)) {
+			inBlock = false;
+			if (block.some((l) => l.includes(anchor))) {
+				return block;
+			}
+			block.length = 0;
+			continue;
+		}
+		if (inBlock) {
+			block.push(line);
+		}
+	}
+	return [];
+}
+
+function assertPinnedRollbackContainment(rollback: string): void {
+	if (/sudo systemctl start synthetic-ui\.service/.test(rollback)) {
+		throw new Error('pinned rollback must not start the restored legacy service');
+	}
+	if (!rollback.includes('sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"')) {
+		throw new Error('pinned rollback must verify its run-scoped report');
+	}
+	if ((rollback.match(/test "\$TIMER_UNIT_STATE" = disabled/g) ?? []).length < 2) {
+		throw new Error('pinned rollback must reassert timer containment');
+	}
+	if (
+		(rollback.match(
+			/test "\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)" = inactive/g
+		) ?? []).length < 2
+	) {
+		throw new Error('pinned rollback must reassert service containment');
+	}
+}
+
+function assertPinnedRollbackImageProvenance(rollback: string): void {
+	const requiredProofs = [
+		'sudo test -f "$BACKUP/previous-image-id"',
+		'ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"',
+		'[[ "$ROLLBACK_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]',
+		'test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"',
+		'test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"'
+	];
+	for (const proof of requiredProofs) {
+		if (!rollback.includes(proof)) {
+			throw new Error(`pinned rollback image provenance proof is missing: ${proof}`);
+		}
+	}
+	if (
+		!rollback.match(
+			/LOCAL_ROLLBACK_IMAGE_ID="\$\(sudo docker image inspect \\\r?\n\s+"\$ROLLBACK_IMAGE" --format '\{\{\.Id\}\}'\)"/
+		)
+	) {
+		throw new Error('pinned rollback must inspect the tagged image before restore');
+	}
+	if (
+		!rollback.match(
+			/RESOLVED_IMAGE_ID="\$\(sudo docker image inspect \\\r?\n\s+"\$RESOLVED_IMAGE" --format '\{\{\.Id\}\}'\)"/
+		)
+	) {
+		throw new Error('pinned rollback must inspect the Compose-resolved image');
+	}
+}
+
+test('install runbook creates /opt/synthetic-ui/app/scripts before installing the wrapper', () => {
+	const readme = loadReadme();
+	// Find the bash block that contains the wrapper install step.
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the install bash block in README.md').toBeGreaterThan(0);
+
+	const installDirIdx = block.findIndex((l) =>
+		/sudo install -d .*\/opt\/synthetic-ui\/app\/scripts/.test(l)
+	);
+	// Specifically find the install that writes to the scripts directory (not
+	// the backup-section install that writes to $BACKUP/run-synthetic-ui.sh).
+	const wrapperScriptInstallIdx = block.findIndex((l) =>
+		l.includes('/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new')
+	);
+
+	expect(
+		installDirIdx,
+		'install runbook must create /opt/synthetic-ui/app/scripts with `sudo install -d` before installing the wrapper'
+	).toBeGreaterThanOrEqual(0);
+
+	expect(
+		wrapperScriptInstallIdx,
+		'install runbook must contain the install step writing to /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new'
+	).toBeGreaterThanOrEqual(0);
+
+	expect(
+		installDirIdx,
+		'`install -d` for /opt/synthetic-ui/app/scripts must appear before the install into /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new'
+	).toBeLessThan(wrapperScriptInstallIdx);
+});
+
+test('install runbook cleanup removes WRAPPER_STAGE together with COMPOSE_STAGE and SERVICE_STAGE', () => {
+	const readme = loadReadme();
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the install bash block in README.md').toBeGreaterThan(0);
+
+	const cleanupLine = block.find((l) => l.includes('rm -f') && l.includes('COMPOSE_STAGE'));
+	expect(
+		cleanupLine,
+		'install runbook must have a cleanup line that removes $COMPOSE_STAGE'
+	).toBeDefined();
+
+	expect(
+		cleanupLine,
+		'cleanup line must also remove $SERVICE_STAGE'
+	).toContain('SERVICE_STAGE');
+
+	expect(
+		cleanupLine,
+		'cleanup line must also remove $WRAPPER_STAGE to avoid leaving a stale staged file in /tmp'
+	).toContain('WRAPPER_STAGE');
+});
+
+// ---------------------------------------------------------------------------
+// Windows staging: LF byte guarantee
+// ---------------------------------------------------------------------------
+
+test('Windows staging configures core.autocrlf=false before checkout to prevent CRLF line endings', () => {
+	const readme = loadReadme();
+	const block = extractPowerShellBlock(readme, 'checkout --detach');
+	expect(block.length, 'expected to find the Windows staging PowerShell block').toBeGreaterThan(0);
+
+	const cloneIdx = block.findIndex((l) => l.includes('clone --no-checkout'));
+	const autocrlfIdx = block.findIndex((l) => l.includes('config core.autocrlf false'));
+	const checkoutIdx = block.findIndex((l) => l.includes('checkout --detach'));
+
+	expect(cloneIdx, 'staging block must use git clone --no-checkout').toBeGreaterThanOrEqual(0);
+	expect(
+		autocrlfIdx,
+		'staging block must configure core.autocrlf false so checkout writes LF repository bytes'
+	).toBeGreaterThanOrEqual(0);
+	expect(checkoutIdx, 'staging block must include git checkout --detach').toBeGreaterThanOrEqual(0);
+
+	expect(
+		cloneIdx,
+		'git clone --no-checkout must appear before core.autocrlf config'
+	).toBeLessThan(autocrlfIdx);
+	expect(
+		autocrlfIdx,
+		'core.autocrlf=false must be configured before checkout --detach writes any files'
+	).toBeLessThan(checkoutIdx);
+});
+
+test('Windows staging rejects CR bytes in all three staged text assets before SCP transfer', () => {
+	const readme = loadReadme();
+	const block = extractPowerShellBlock(readme, 'scp');
+	expect(block.length, 'expected to find the Windows staging PowerShell block with SCP').toBeGreaterThan(0);
+
+	// Must contain a numeric 13 (CR byte value) or an explicit 0x0D literal check.
+	const crCheckIdx = block.findIndex((l) => /\b13\b|0x0[Dd]/.test(l));
+	expect(
+		crCheckIdx,
+		'staging block must include a CR byte (decimal 13 / 0x0D) rejection check'
+	).toBeGreaterThanOrEqual(0);
+
+	// The loop must cover all three staged file variables.
+	const rejectionArea = block.join('\n');
+	expect(rejectionArea, 'CR rejection must reference $Compose').toContain('Compose');
+	expect(rejectionArea, 'CR rejection must reference $Service').toContain('Service');
+	expect(rejectionArea, 'CR rejection must reference $Wrapper').toContain('Wrapper');
+
+	// CR rejection must appear before any scp transfer line.
+	const scpIdx = block.findIndex((l) => /^\s*scp\b/.test(l));
+	expect(scpIdx, 'staging block must include scp transfer step').toBeGreaterThanOrEqual(0);
+	expect(
+		crCheckIdx,
+		'CR byte rejection must appear before SCP transfer so a CRLF-transformed file is never transferred to the host'
+	).toBeLessThan(scpIdx);
+});
+
+// ---------------------------------------------------------------------------
+// Host preflight: bash -n ordering
+// ---------------------------------------------------------------------------
+
+test('host preflight validates wrapper bash syntax after checksums but before any file installation', () => {
+	const readme = loadReadme();
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the host install bash block').toBeGreaterThan(0);
+
+	// Find the last sha256sum -c line index.
+	const sha256Indices = block
+		.map((l, i) => ({ l, i }))
+		.filter(({ l }) => l.includes('sha256sum -c'));
+	expect(sha256Indices.length, 'install block must have sha256sum -c checksum lines').toBeGreaterThan(0);
+	const lastSha256Idx = sha256Indices[sha256Indices.length - 1].i;
+
+	// bash -n syntax check on the wrapper stage.
+	const bashNIdx = block.findIndex((l) => /bash\s+-n\s+.*WRAPPER_STAGE/.test(l));
+	expect(
+		bashNIdx,
+		'install block must include bash -n "$WRAPPER_STAGE" to catch CRLF wrappers before installation'
+	).toBeGreaterThanOrEqual(0);
+
+	// The load-bearing ordering contract: bash -n must occur AFTER all checksums
+	// and BEFORE the wrapper is atomically installed to its final target path.
+	// The install command spans two lines; find the line with the target path.
+	const wrapperInstallIdx = block.findIndex((l) =>
+		l.includes('run-synthetic-ui.sh.new') && !l.includes('$BACKUP')
+	);
+	expect(wrapperInstallIdx, 'install block must have the wrapper atomic install target path').toBeGreaterThanOrEqual(0);
+
+	expect(
+		lastSha256Idx,
+		'bash -n syntax check must come after all sha256sum -c checksum verifications'
+	).toBeLessThan(bashNIdx);
+	expect(
+		bashNIdx,
+		'bash -n syntax check must come before the wrapper is atomically installed to run-synthetic-ui.sh.new'
+	).toBeLessThan(wrapperInstallIdx);
+});
+
+// ---------------------------------------------------------------------------
+// Install mode classification
+// ---------------------------------------------------------------------------
+
+test('install mode classifies existing full-SHA tag as pinned upgrade', () => {
+	const readme = loadReadme();
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the host install bash block').toBeGreaterThan(0);
+
+	// SHA-tag regex must appear before or at the INSTALL_MODE=pinned assignment.
+	const shaTagIdx = block.findIndex((l) =>
+		l.includes('selfservice-synthetic-ui:[0-9a-f]{40}')
+	);
+	const pinnedIdx = block.findIndex((l) => l.includes('INSTALL_MODE=pinned'));
+
+	expect(shaTagIdx, 'install block must match the SHA-tag image format').toBeGreaterThanOrEqual(0);
+	expect(pinnedIdx, 'install block must set INSTALL_MODE=pinned').toBeGreaterThanOrEqual(0);
+	expect(
+		shaTagIdx,
+		'SHA-tag regex must appear at or before INSTALL_MODE=pinned'
+	).toBeLessThanOrEqual(pinnedIdx);
+});
+
+test('install mode classifies existing immutable digest as first-migration containment retry, not pinned', () => {
+	const readme = loadReadme();
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the host install bash block').toBeGreaterThan(0);
+
+	// Must have an elif/conditional branch that matches the digest format.
+	const digestBranchIdx = block.findIndex((l) =>
+		l.includes('selfservice-synthetic-ui@sha256:[0-9a-f]{64}') &&
+		/elif|^\[\[/.test(l)
+	);
+	expect(
+		digestBranchIdx,
+		'install block must have a separate branch matching the immutable digest format (@sha256:[0-9a-f]{64})'
+	).toBeGreaterThanOrEqual(0);
+
+	// Within the digest branch, INSTALL_MODE=first-migration must appear.
+	const afterDigest = block.slice(digestBranchIdx);
+	const firstMigrationInBranch = afterDigest.findIndex((l) =>
+		l.includes('INSTALL_MODE=first-migration')
+	);
+	expect(
+		firstMigrationInBranch,
+		'digest branch must set INSTALL_MODE=first-migration (not pinned)'
+	).toBeGreaterThanOrEqual(0);
+
+	// INSTALL_MODE=pinned must NOT appear inside the digest branch (before the next elif/else/fi).
+	const endOfDigestBranch = afterDigest.findIndex(
+		(l, i) => i > 0 && /^\s*(elif|else|fi)\b/.test(l)
+	);
+	const digestBranchBody =
+		endOfDigestBranch >= 0 ? afterDigest.slice(0, endOfDigestBranch) : afterDigest;
+	expect(
+		digestBranchBody.some((l) => l.includes('INSTALL_MODE=pinned')),
+		'digest branch must NOT set INSTALL_MODE=pinned'
+	).toBe(false);
+});
+
+test('digest retry branch proves runtime=false, digest exists locally, and Compose resolves to it', () => {
+	const readme = loadReadme();
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the host install bash block').toBeGreaterThan(0);
+
+	const digestBranchIdx = block.findIndex((l) =>
+		l.includes('selfservice-synthetic-ui@sha256:[0-9a-f]{64}') &&
+		/elif|^\[\[/.test(l)
+	);
+	expect(digestBranchIdx, 'digest branch must be present').toBeGreaterThanOrEqual(0);
+
+	const afterDigest = block.slice(digestBranchIdx);
+	const endOfBranch = afterDigest.findIndex(
+		(l, i) => i > 0 && /^\s*(elif|else|fi)\b/.test(l)
+	);
+	const branchBody =
+		(endOfBranch >= 0 ? afterDigest.slice(0, endOfBranch) : afterDigest).join('\n');
+
+	expect(branchBody, 'digest retry must validate runtime=false via validate_runtime').toContain(
+		'validate_runtime'
+	);
+	expect(
+		branchBody,
+		'digest retry must prove digest exists locally via docker image inspect'
+	).toContain('docker image inspect');
+	expect(
+		branchBody,
+		'digest retry must prove Compose resolves to the digest via docker compose'
+	).toContain('docker compose');
+	expect(
+		branchBody,
+		'digest retry must verify Compose-resolved image equals PREVIOUS_IMAGE'
+	).toContain('CURRENT_RESOLVED_IMAGE');
+});
+
+test('install mode fails closed with exit 1 on invalid pin format in image.env', () => {
+	const readme = loadReadme();
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the host install bash block').toBeGreaterThan(0);
+
+	// Find an else block (not elif) that is followed by exit 1 before the next fi.
+	const elseIdx = block.findIndex((l, i) => {
+		if (!/^\s*else\s*$/.test(l)) return false;
+		const after = block.slice(i + 1);
+		const nextFi = after.findIndex((al) => /^\s*fi\s*$/.test(al));
+		const range = nextFi >= 0 ? after.slice(0, nextFi) : after;
+		return range.some((al) => /\bexit 1\b/.test(al));
+	});
+
+	expect(
+		elseIdx,
+		'install block must have an else branch with exit 1 to fail closed on unrecognised pin formats'
+	).toBeGreaterThanOrEqual(0);
+});
+
+// ---------------------------------------------------------------------------
+// Report root ownership: runbook check
+// ---------------------------------------------------------------------------
+
+test('install runbook initializes runs and recursively repairs report/results ownership before canary', () => {
+	const readme = loadReadme();
+	const block = extractBashBlock(readme, '/opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new');
+	expect(block.length, 'expected to find the host install bash block').toBeGreaterThan(0);
+
+	const installIdx = block.findIndex((l) => l.includes('sudo install -d -m 0755 -o 1001 -g 1001'));
+	const installCommand = block.slice(installIdx, installIdx + 2).join(' ');
+	expect(installIdx, 'install runbook must initialize bind-mount roots').toBeGreaterThanOrEqual(0);
+	expect(installCommand).toContain('/opt/synthetic-ui/report/runs');
+	expect(installCommand).toContain('/opt/synthetic-ui/results');
+
+	const chownIdx = block.findIndex((l) =>
+		l.includes('sudo chown -R --no-dereference 1001:1001')
+	);
+	const chownCommand = block.slice(chownIdx, chownIdx + 2).join(' ');
+	expect(
+		chownIdx,
+		'install runbook must recursively repair report and results trees for UID 1001'
+	).toBeGreaterThanOrEqual(0);
+	expect(chownCommand).toContain('/opt/synthetic-ui/report');
+	expect(chownCommand).toContain('/opt/synthetic-ui/results');
+
+	// The canary is sudo systemctl start synthetic-ui.service.
+	const canaryIdx = block.findIndex((l) => /sudo systemctl start synthetic-ui\.service/.test(l));
+	expect(canaryIdx, 'install runbook must start the canary service').toBeGreaterThanOrEqual(0);
+	expect(
+		chownIdx,
+		'recursive ownership repair must appear before the canary systemctl start'
+	).toBeLessThan(canaryIdx);
+});
+
+test('one-time setup recursively assigns report and results trees to UID 1001', () => {
+	const block = extractBashBlock(loadReadme(), '/opt/synthetic-ui/{secrets,app,results,report/runs}');
+	expect(block.length, 'expected to find the one-time setup block').toBeGreaterThan(0);
+	const chownIdx = block.findIndex((line) =>
+		line.includes('sudo chown -R --no-dereference 1001:1001')
+	);
+	const command = block.slice(chownIdx, chownIdx + 2).join(' ');
+	expect(chownIdx).toBeGreaterThanOrEqual(0);
+	expect(command).toContain('/opt/synthetic-ui/report');
+	expect(command).toContain('/opt/synthetic-ui/results');
+});
+
+test('pinned rollback restores prior state but validates through one contained direct canary', () => {
+	const block = extractBashBlock(loadReadme(), "BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'");
+	expect(block.length, 'expected to find rollback bash block').toBeGreaterThan(0);
+	const syntax = spawnSync('bash', ['-n'], {
+		input: block.join('\n'),
+		encoding: 'utf8'
+	});
+	expect(syntax.status, syntax.stderr).toBe(0);
+	const rollback = block.join('\n');
+	assertPinnedRollbackContainment(rollback);
+	assertPinnedRollbackImageProvenance(rollback);
+	const pinnedStart = block
+		.map((line, index) => ({ line, index }))
+		.filter(({ line }) => line.trim() === 'if [ "$INSTALL_MODE" = pinned ]; then')
+		.at(-1)?.index ?? -1;
+	const firstMigrationStart = block.findIndex(
+		(line, index) => index > pinnedStart && line.includes('elif [ "$INSTALL_MODE" = first-migration ]; then')
+	);
+	expect(pinnedStart, 'rollback must have a pinned validation branch').toBeGreaterThanOrEqual(0);
+	expect(firstMigrationStart).toBeGreaterThan(pinnedStart);
+	const pinnedBranch = block.slice(pinnedStart, firstMigrationStart).join('\n');
+
+	const wrapperRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0755 "$BACKUP/run-synthetic-ui.sh"')
+	);
+	const composeRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/docker-compose.yml"')
+	);
+	const serviceRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/synthetic-ui.service"')
+	);
+	const sourceRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo tee /opt/synthetic-ui/source.sha.new')
+	);
+	const imageRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/image.env"')
+	);
+	const runtimeRestoreIdx = block.findIndex((line) =>
+		line.includes('sudo install -m 0644 "$BACKUP/runtime.env"')
+	);
+	const resolvedProofIdx = block.findIndex((line) =>
+		line.includes('test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"')
+	);
+	const backupImageIdIdx = block.findIndex((line) =>
+		line.includes('sudo test -f "$BACKUP/previous-image-id"')
+	);
+	const recordedImageIdIdx = block.findIndex((line) =>
+		line.includes('ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"')
+	);
+	const recordedImageIdFormatIdx = block.findIndex((line) =>
+		line.includes('[[ "$ROLLBACK_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]')
+	);
+	const localImageIdProofIdx = block.findIndex((line) =>
+		line.includes('test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"')
+	);
+	const resolvedImageIdProofIdx = block.findIndex((line) =>
+		line.includes('test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"')
+	);
+	const runtimeProofIdx = block.findIndex((line) =>
+		line.includes('validate_runtime /opt/synthetic-ui/runtime.env false')
+	);
+	const directRunIdx = block.findIndex((line) =>
+		line.includes('run --rm --no-deps --pull never monitor')
+	);
+	for (const prerequisite of [
+		wrapperRestoreIdx,
+		composeRestoreIdx,
+		serviceRestoreIdx,
+		sourceRestoreIdx,
+		imageRestoreIdx,
+		runtimeRestoreIdx,
+		resolvedProofIdx,
+		backupImageIdIdx,
+		recordedImageIdIdx,
+		recordedImageIdFormatIdx,
+		localImageIdProofIdx,
+		resolvedImageIdProofIdx,
+		runtimeProofIdx
+	]) {
+		expect(prerequisite).toBeGreaterThanOrEqual(0);
+		expect(prerequisite, 'restore and exact-image proofs must precede the canary').toBeLessThan(
+			directRunIdx
+		);
+	}
+	expect(localImageIdProofIdx, 'local tag identity must be proven before file restore').toBeLessThan(
+		composeRestoreIdx
+	);
+	expect(resolvedProofIdx, 'Compose reference equality must precede resolved ID proof').toBeLessThan(
+		resolvedImageIdProofIdx
+	);
+
+	expect(
+		block.filter((line) => line.includes('run --rm --no-deps --pull never monitor'))
+	).toHaveLength(1);
+	expect(pinnedBranch).toContain('. /opt/synthetic-ui/image.env');
+	expect(pinnedBranch).toContain('. /opt/synthetic-ui/runtime.env');
+	expect(pinnedBranch).toContain('set -aeu');
+	expect(pinnedBranch).toContain('test "$SYNTHETIC_UI_IMAGE" = "$ROLLBACK_IMAGE"');
+	expect(pinnedBranch).toContain('ROLLBACK_CANARY_STATUS=$?');
+	expect(pinnedBranch).toContain('test "$ROLLBACK_CANARY_STATUS" = 0');
+	expect(pinnedBranch).toContain(
+		'sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"'
+	);
+	expect(pinnedBranch).toMatch(
+		/ROLLBACK_RUN_ID="rollback-\$\(date -u \+%Y%m%dT%H%M%SZ\)-\$\$"/
+	);
+
+	expect(rollback).not.toMatch(/sudo systemctl start synthetic-ui\.service/);
+	expect(rollback).not.toMatch(/(?:bash|exec).*run-synthetic-ui\.sh/);
+	expect(pinnedBranch).not.toContain('deployment-guardrails.mjs');
+	expect(pinnedBranch).not.toMatch(/\bprune\b|SYNTHETIC_REPORT_KEEP_RUNS/);
+	expect(rollback).not.toMatch(/\bchown\b|\bsetfacl\b|\b(?:user|group)mod\b/);
+	expect(rollback).not.toMatch(/chmod\s+(?:0?777|0?666)\b/);
+
+	const canaryTail = block.slice(directRunIdx).join('\n');
+	expect(canaryTail).toContain(
+		'test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive'
+	);
+	expect(canaryTail).toContain('test "$TIMER_UNIT_STATE" = disabled');
+	expect(canaryTail).toContain('test "$TIMER_ACTIVE_STATE" = inactive');
+	expect(rollback.match(/test "\$TIMER_UNIT_STATE" = disabled/g)).toHaveLength(2);
+	expect(rollback.match(/test "\$TIMER_ACTIVE_STATE" = inactive/g)).toHaveLength(2);
+	expect(
+		rollback.match(
+			/test "\$\(systemctl show synthetic-ui\.service -p ActiveState --value\)" = inactive/g
+		)
+	).toHaveLength(2);
+});
+
+test('rollback contract rejects legacy starts and missing report/containment assertions', () => {
+	const rollback = extractBashBlock(
+		loadReadme(),
+		"BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'"
+	).join('\n');
+	const reportCheck = 'sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"';
+	const serviceCheck =
+		'test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive';
+
+	expect(() =>
+		assertPinnedRollbackContainment(
+			rollback.replace(reportCheck, `sudo systemctl start synthetic-ui.service\n  ${reportCheck}`)
+		)
+	).toThrow('must not start the restored legacy service');
+	expect(() =>
+		assertPinnedRollbackContainment(rollback.replace(reportCheck, 'true'))
+	).toThrow('must verify its run-scoped report');
+	expect(() =>
+		assertPinnedRollbackContainment(
+			rollback
+				.replaceAll('test "$TIMER_UNIT_STATE" = disabled', 'true')
+				.replaceAll(serviceCheck, 'true')
+		)
+	).toThrow(/timer containment|service containment/);
+});
+
+test('rollback provenance contract rejects omitted and mismatched image ID proofs', () => {
+	const rollback = extractBashBlock(
+		loadReadme(),
+		"BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'"
+	).join('\n');
+	const localProof = 'test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"';
+	const resolvedProof = 'test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"';
+
+	expect(() =>
+		assertPinnedRollbackImageProvenance(
+			rollback.replace('sudo test -f "$BACKUP/previous-image-id"', 'true')
+		)
+	).toThrow('image provenance proof is missing');
+	expect(() =>
+		assertPinnedRollbackImageProvenance(rollback.replace(resolvedProof, 'true'))
+	).toThrow('image provenance proof is missing');
+	expect(() =>
+		assertPinnedRollbackImageProvenance(
+			rollback.replace(localProof, 'test "$LOCAL_ROLLBACK_IMAGE_ID" != "$ROLLBACK_IMAGE_ID"')
+		)
+	).toThrow('image provenance proof is missing');
+	expect(() =>
+		assertPinnedRollbackImageProvenance(
+			rollback.replace(
+				resolvedProof,
+				'test "$RESOLVED_IMAGE_ID" = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"'
+			)
+		)
+	).toThrow('image provenance proof is missing');
+});
+
+test('rollback documentation warns that ownership rollback is forward-only containment', () => {
+	const readme = loadReadme();
+	expect(readme).toContain('Danger — containment rollback only.');
+	expect(readme).toContain('ownership migration');
+	expect(readme).toContain('is forward-only');
+	expect(readme).toContain('do not enable scheduling until the forward host hardening is');
+});
+
+// ---------------------------------------------------------------------------
+// Bash wrapper: report root preflight — load-bearing runtime tests
+// ---------------------------------------------------------------------------
+
+test('bash host wrapper rejects a missing report root before invoking Docker', () => {
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-no-report-'));
+	const dockerDir = join(root, 'bin');
+	const logFile = join(root, 'docker.log');
+	mkdirSync(dockerDir, { recursive: true });
+	// Intentionally do NOT create the report directory.
+	const reportRoot = join(root, 'report-missing');
+	const resultsRoot = join(root, 'results');
+	mkdirSync(resultsRoot, { recursive: true });
+
+	const fakeDocker = join(dockerDir, 'docker');
+	writeFileSync(
+		fakeDocker,
+		['#!/usr/bin/env bash', 'printf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"', 'exit 0'].join('\n')
+	);
+	chmodSync(fakeDocker, 0o755);
+
+	const wrapper = materializeSandboxedWrapper(root, reportRoot, resultsRoot);
+	const result = spawnSync('bash', [wrapper], {
+		cwd: process.cwd(),
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
+			FAKE_DOCKER_LOG: logFile,
+			SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
+		}
+	});
+
+	expect(result.status, 'wrapper must exit non-zero when report root is missing').not.toBe(0);
+	expect(result.stderr, 'wrapper must print a diagnostic for the missing report root').toMatch(
+		/report root/i
+	);
+	// Docker must NOT have been invoked.
+	expect(existsSync(logFile), 'Docker must not be invoked when report root is missing').toBe(false);
+});
+
+test('bash host wrapper delegates writability checks instead of testing as the host UID', () => {
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-unwritable-'));
+	const dockerDir = join(root, 'bin');
+	const logFile = join(root, 'docker.log');
+	const reportRoot = join(root, 'report');
+	const resultsRoot = join(root, 'results');
+	mkdirSync(dockerDir, { recursive: true });
+	mkdirSync(reportRoot, { recursive: true });
+	mkdirSync(resultsRoot, { recursive: true });
+	// The systemd host UID cannot write a correct UID 1001-owned 0755 root.
+	chmodSync(reportRoot, 0o555);
+
+	const fakeDocker = join(dockerDir, 'docker');
+	writeFileSync(
+		fakeDocker,
+		['#!/usr/bin/env bash', 'printf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"', 'exit 0'].join('\n')
+	);
+	chmodSync(fakeDocker, 0o755);
+
+	const wrapper = materializeSandboxedWrapper(root, reportRoot, resultsRoot);
+	const result = spawnSync('bash', [wrapper], {
+		cwd: process.cwd(),
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
+			FAKE_DOCKER_LOG: logFile,
+			SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
+		}
+	});
+
+	// Restore so the tmp cleanup can remove the dir.
+	chmodSync(reportRoot, 0o755);
+
+	expect(result.status, result.stderr).toBe(0);
+	const dockerCalls = readFileSync(logFile, 'utf8').trim().split('\n');
+	expect(dockerCalls).toHaveLength(3);
+	expect(dockerCalls[0]).toContain('deployment-guardrails.mjs preflight');
+	expect(dockerCalls[1]).toContain('run --rm monitor');
+	expect(dockerCalls[2]).toContain('deployment-guardrails.mjs prune 3');
+});
+
+test('bash host wrapper rejects a missing results root before invoking Docker', () => {
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-no-results-'));
+	const dockerDir = join(root, 'bin');
+	const logFile = join(root, 'docker.log');
+	const reportRoot = join(root, 'report');
+	const resultsRoot = join(root, 'results-missing');
+	mkdirSync(dockerDir, { recursive: true });
+	mkdirSync(reportRoot, { recursive: true });
+
+	const fakeDocker = join(dockerDir, 'docker');
+	writeFileSync(fakeDocker, '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"\n');
+	chmodSync(fakeDocker, 0o755);
+
+	const result = spawnSync(
+		'bash',
+		[materializeSandboxedWrapper(root, reportRoot, resultsRoot)],
+		{
+			cwd: process.cwd(),
+			encoding: 'utf8',
+			env: {
+				...process.env,
+				PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
+				FAKE_DOCKER_LOG: logFile,
+				SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
+			}
+		}
+	);
+
+	expect(result.status).not.toBe(0);
+	expect(result.stderr).toContain(`results root '${resultsRoot.replace(/\\/g, '/')}' does not exist`);
+	expect(existsSync(logFile), 'Docker must not run before results-root validation').toBe(false);
+});
+
+test('bash host wrapper rejects a results symlink before Docker without touching its target', () => {
+	const root = mkdtempSync(join(tmpdir(), 'synthetic-ui-results-link-'));
+	const dockerDir = join(root, 'bin');
+	const logFile = join(root, 'docker.log');
+	const reportRoot = join(root, 'report');
+	const resultsRoot = join(root, 'results-link');
+	const targetRoot = join(root, 'outside-results');
+	const sentinel = join(targetRoot, 'sentinel.txt');
+	mkdirSync(dockerDir, { recursive: true });
+	mkdirSync(reportRoot, { recursive: true });
+	mkdirSync(targetRoot, { recursive: true });
+	writeFileSync(sentinel, 'keep');
+	symlinkSync(targetRoot, resultsRoot, 'junction');
+
+	const fakeDocker = join(dockerDir, 'docker');
+	writeFileSync(fakeDocker, '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$FAKE_DOCKER_LOG"\n');
+	chmodSync(fakeDocker, 0o755);
+
+	const result = spawnSync(
+		'bash',
+		[materializeSandboxedWrapper(root, reportRoot, resultsRoot)],
+		{
+			cwd: process.cwd(),
+			encoding: 'utf8',
+			env: {
+				...process.env,
+				PATH: `${dockerDir.replace(/\\/g, '/')}:${process.env.PATH ?? ''}`,
+				FAKE_DOCKER_LOG: logFile,
+				SYNTHETIC_UI_IMAGE: `ghcr.io/jmal1/selfservice-synthetic-ui:${'a'.repeat(40)}`
+			}
+		}
+	);
+
+	expect(result.status).not.toBe(0);
+	expect(result.stderr).toContain(
+		`results root '${resultsRoot.replace(/\\/g, '/')}' must not be a symlink`
+	);
+	expect(existsSync(logFile), 'Docker must not run before results-symlink validation').toBe(false);
+	expect(readFileSync(sentinel, 'utf8')).toBe('keep');
+});

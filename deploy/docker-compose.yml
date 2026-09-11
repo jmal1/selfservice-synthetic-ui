@@ -1,0 +1,30 @@
+# docker-compose file for the synthetic UI monitor.
+#
+# Used by the systemd-based scheduler on the edge runner host. The compose file
+# mainly captures the volume + env wiring so we don't need to remember
+# the full `docker run` flag list.
+#
+# Usage:
+#   docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml run --rm monitor
+services:
+  monitor:
+    image: "${SYNTHETIC_UI_IMAGE:?SYNTHETIC_UI_IMAGE must be an immutable ghcr.io/jmal1/selfservice-synthetic-ui:<40-character lowercase commit SHA> tag}"
+    pull_policy: always
+    env_file:
+      - /opt/synthetic-ui/secrets/env
+    environment:
+      # Production-safe defaults: provisioning is enabled, lifecycle is contained.
+      SYNTHETIC_LIFECYCLE_ENABLED: "${SYNTHETIC_LIFECYCLE_ENABLED:-false}"
+      SYNTHETIC_EXPECT_MAINTENANCE: "${SYNTHETIC_EXPECT_MAINTENANCE:-false}"
+      # Each run writes to its own HTML report directory under the bind mount.
+      PLAYWRIGHT_REPORT_RUN_ID: "${PLAYWRIGHT_REPORT_RUN_ID:-latest}"
+    volumes:
+      - /opt/synthetic-ui/results:/app/test-results
+      - /opt/synthetic-ui/report:/app/playwright-report
+    # The container exits on its own when the suite finishes; no restart.
+    restart: "no"
+    # Constrain memory so a runaway browser can't OOM the edge host.
+    mem_limit: 2g
+    cpus: 1.5
+    # Run as the synthetic-ui user on the host (UID 1001 in the image).
+    user: pwuser

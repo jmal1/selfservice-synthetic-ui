@@ -1,0 +1,31 @@
+[Unit]
+Description=Crucible synthetic UI monitor (Playwright in Docker)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jmal
+Group=docker
+WorkingDirectory=/opt/synthetic-ui/app
+# Safe containment while provisioning remains enabled: run non-mutating checks.
+Environment=SYNTHETIC_LIFECYCLE_ENABLED=false
+Environment=SYNTHETIC_EXPECT_MAINTENANCE=false
+# The host wrapper requests container-UID report retention after every run.
+Environment=SYNTHETIC_REPORT_KEEP_RUNS=3
+# Non-secret, exact SHA-tagged image selection. Fail closed if the pin is absent.
+EnvironmentFile=/opt/synthetic-ui/image.env
+# Persistent containment controls. This mandatory file overrides the defaults.
+EnvironmentFile=/opt/synthetic-ui/runtime.env
+# Pull the pinned image (small layer diff once cached) then run once.
+ExecStartPre=/usr/bin/docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml pull --quiet
+ExecStart=/usr/bin/bash /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh
+StandardOutput=journal
+StandardError=journal
+# Each run should complete in ~3 min; kill after 15 to avoid runaway.
+TimeoutStartSec=900
+
+# Security hardening (the container itself adds another layer of isolation).
+NoNewPrivileges=false
+PrivateTmp=true

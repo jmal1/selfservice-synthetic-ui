@@ -1,0 +1,15 @@
+[Unit]
+Description=Run Crucible synthetic UI monitor every hour
+Requires=synthetic-ui.service
+
+[Timer]
+# Every hour at minute 7 (offset from the API monitor's */10 to avoid
+# load spikes).
+OnCalendar=*-*-* *:07:00
+# If we miss a window (e.g., reboot), run on next boot.
+Persistent=true
+RandomizedDelaySec=60
+Unit=synthetic-ui.service
+
+[Install]
+WantedBy=timers.target

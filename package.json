@@ -1,0 +1,27 @@
+{
+  "name": "selfservice-synthetic-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "External Playwright synthetic-monitoring suite for the Crucible self-service portal",
+  "scripts": {
+    "test": "playwright test",
+    "test:unit": "playwright test --config playwright.unit.config.ts",
+    "test:ownership": "bash unit-tests/report-ownership.integration.sh",
+    "test:ui-mode": "playwright test --ui",
+    "test:no-push": "PUSHGATEWAY_URL=skip playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "lint": "tsc --noEmit",
+    "verify": "npm run lint && npm run test:unit && npm run test:ownership && node scripts/verify-playwright-list.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.10.0",
+    "dotenv": "^16.4.5",
+    "typescript": "^5.7.0",
+    "yaml": "^2.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,739 @@
+# selfservice-synthetic-ui
+
+External Playwright synthetic-monitoring suite for the Crucible
+self-service portal. Pairs with the internal Go API monitor at
+`selfservice-api/cmd/synthetic-api-monitor` — this one covers the
+**UI layer** that the Go suite cannot: the SvelteKit bundle, the
+WebMKS console iframe, the Caddy reverse-proxy path, and the
+Authentik OIDC redirect dance.
+
+## What it tests
+
+| spec                          | purpose                                                              |
+|-------------------------------|----------------------------------------------------------------------|
+| `auth.spec.ts`                | Full OIDC login through Authentik → land on dashboard                |
+| `pods-list.spec.ts`           | Authenticated home page loads, no 500s, lists pods (if any)          |
+| `create-and-destroy-pod.spec.ts` | UI creates a synthetic pod, waits for "ready", destroys it.        |
+| `03-provisioning-maintenance.spec.ts` | Reads provisioning status and verifies maintenance UI controls without mutations. |
+| `workflow-list.spec.ts`       | `/admin/workflows` 403 for non-admins (synthetic is a student role)  |
+| `console-and-provisioning-regressions.spec.ts` | Supporting WMKS canvas keyboard delivery + provisioning banner stability |
+| `console-guest-keyboard-nonce.spec.ts` | Gate B2: physical nonce through KeyboardManager2 (Ubuntu) + Windows control |
+| `healthz.spec.ts`             | Anonymous `/healthz` returns 200 with `status: ok`                   |
+| `zz-logout.spec.ts`           | Sign out terminates the session and does not silently re-auth (runs last) |
+
+Each spec records pass/fail + duration and pushes to the lab
+Pushgateway with `layer=ui` so Grafana can compare `layer=api` vs
+`layer=ui` failure rates side-by-side.
+
+## Architecture
+
+```
+                ┌──────────────────────────────────────┐
+                │     Internet (public DNS / Caddy)    │
+                └────────────┬─────────────────────────┘
+                             │
+                             │ https://crucible.example.test
+                             ▼
+   ┌──────────────────────┐      ┌─────────────────────────┐
+   │  edge runner host    │      │  Authentik (IdP)        │
+   │  (Playwright runner) │◄────►│  OIDC server            │
+   │  systemd timer @ 60m │      └─────────────────────────┘
+   │  pushes metrics ──►──┼───┐
+   └──────────────────────┘   │
+                              ▼
+                  ┌─────────────────────────────┐
+                  │ Pushgateway (observability) │
+                  │  ─►  Prometheus  ─►  Grafana│
+                  └─────────────────────────────┘
+```
+
+The runner lives on an operator-supplied edge host (public-facing reverse-proxy path)
+so it goes through the **full public path**
+the same way a student does. Running it inside the K8s cluster would
+short-circuit Caddy + Authentik and miss the most common failure
+modes.
+
+## Setup
+
+### One-time, on the edge runner host (Docker-based, recommended)
+
+The runner is published as a Docker image so the edge host doesn't need
+Node.js, npm, or Chromium installed on the host.
+
+```bash
+# Create the secrets env file at /opt/synthetic-ui/secrets/env (operator supplies values)
+sudo mkdir -p /opt/synthetic-ui/{secrets,app,results,report/runs}
+sudo chown -R "$USER:$USER" /opt/synthetic-ui
+# The container runs as pwuser (UID 1001 in the Playwright image); the bind-mount
+# trees, including legacy children, must be owned by that UID.
+sudo install -d -m 0755 -o 1001 -g 1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/report/runs /opt/synthetic-ui/results
+sudo chown -R --no-dereference 1001:1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/results
+
+# Edit /opt/synthetic-ui/secrets/env to set:
+#   SYNTHETIC_USERNAME=synthetic@example.com
+#   SYNTHETIC_PASSWORD=<placeholder>
+#   SYNTHETIC_BASE_URL=https://crucible.example.test
+#   SYNTHETIC_LIFECYCLE_ENABLED=false
+#   SYNTHETIC_EXPECT_MAINTENANCE=false
+#   PUSHGATEWAY_URL=http://pushgateway.example.test:9091
+#   PUSHGATEWAY_JOB=crucible_synthetic_ui
+#   SYNTHETIC_IDP_HOST=auth.example.test
+sudo chmod 600 /opt/synthetic-ui/secrets/env
+
+# Clone the deploy files (compose + systemd units only — image carries the rest)
+git clone --depth 1 https://github.com/jmal1/selfservice-synthetic-ui.git /opt/synthetic-ui/app
+
+# Contain any prior installation, then install the units without enabling them.
+sudo systemctl disable --now synthetic-ui.timer
+sudo cp /opt/synthetic-ui/app/deploy/synthetic-ui.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+The production wrapper writes each HTML report to
+`/opt/synthetic-ui/report/runs/<run-id>` and keeps only the newest three runs,
+so failure evidence stays bounded without touching unrelated host files.
+The host launcher is a Bash wrapper; it validates the exact SHA-tagged image,
+runs Docker Compose, and asks the image-side Node guardrail to preflight and
+prune the bind mounts as `pwuser` without requiring `/usr/bin/node` on the host.
+
+Do **not** enable or start `synthetic-ui.timer` as part of this change. A safe
+manual run is appropriate only after the coordinated backend and UI
+maintenance changes have deployed in this order:
+
+1. Deploy the coordinated `selfservice-api` PR (number pending) and verify the
+   authenticated provisioning-status endpoint returns maintenance disabled.
+2. Deploy
+   [`selfservice-ui#48`](https://github.com/jmal1/selfservice-ui/pull/48) and
+   verify its banner and provisioning-control gates.
+3. Deploy this synthetic image with
+   `SYNTHETIC_LIFECYCLE_ENABLED=false` and
+   `SYNTHETIC_EXPECT_MAINTENANCE=false`, then run the service manually.
+4. Re-enabling the production timer or provisioning is a separate,
+   explicitly approved operation and is not part of this PR.
+
+### Local development (Node-based)
+
+For debugging tests interactively you do need Node + Playwright. The safe,
+non-mutating gate for CI and local verification is `npm run verify`: it runs the
+full pre-build checklist (`lint`, `test:unit`, `test:ownership`) and then asks
+Playwright to discover/compile the suite with `PUSHGATEWAY_URL=skip`, so it does
+not log into the live site or mutate production.
+
+```bash
+npm ci
+npx playwright install chromium
+
+# Linux/macOS
+npm run verify
+PUSHGATEWAY_URL=skip npx playwright test --list
+
+# Windows PowerShell
+npm run verify
+$env:PUSHGATEWAY_URL = 'skip'; npx playwright test --list
+
+cat > .env <<'EOF'
+SYNTHETIC_USERNAME=synthetic@example.com
+SYNTHETIC_PASSWORD=<placeholder>
+SYNTHETIC_BASE_URL=https://crucible.example.test
+SYNTHETIC_LIFECYCLE_ENABLED=true
+SYNTHETIC_EXPECT_MAINTENANCE=false
+SYNTHETIC_TEMPLATE_NAME=synthetic-noop
+SYNTHETIC_IDP_HOST=auth.example.test
+PUSHGATEWAY_URL=skip
+EOF
+
+npm test                  # run the suite once (no push since URL=skip)
+npm run test:ui-mode      # debug interactively
+npm run test:headed       # see the browser
+```
+
+### Digest-pinned updates
+
+Each publishing workflow run (`master` push or manual dispatch) uploads an
+`image-digest-synthetic-ui` artifact containing
+`image-digest-synthetic-ui.tsv`. It has no header and exactly one tab-separated
+record with the stable schema `component`, `repository`, `digest`, `source_sha`:
+
+```text
+synthetic-ui	ghcr.io/jmal1/selfservice-synthetic-ui	sha256:<64 lowercase hex>	<40-character source SHA>
+```
+
+`/opt/synthetic-ui/app` is an installed-file directory, not a Git checkout.
+Stage the two deployment files from a clean, exact-SHA checkout on the Windows
+admin machine. The following PowerShell also reads the downloaded artifact and
+prints the values needed for host verification:
+
+```powershell
+$SourceSha = '<full-SHA-of-approved-workflow-run>'
+$Work = Join-Path $env:TEMP "synthetic-ui-$SourceSha"
+git clone --no-checkout https://github.com/jmal1/selfservice-synthetic-ui.git $Work
+git -C $Work fetch --no-tags origin $SourceSha
+# Force LF line endings before any file is written so the hash attests repository bytes,
+# not Windows-transformed CRLF bytes. Must come after clone but before checkout.
+git -C $Work config core.autocrlf false
+git -C $Work checkout --detach $SourceSha
+if ((git -C $Work rev-parse HEAD) -ne $SourceSha) { throw 'source SHA mismatch' }
+if (git -C $Work status --porcelain) { throw 'operator checkout is not clean' }
+
+$Lines = @(Get-Content .\image-digest-synthetic-ui.tsv)
+if ($Lines.Count -ne 1) { throw 'manifest must contain exactly one record' }
+$Fields = $Lines[0] -split "`t"
+if ($Fields.Count -ne 4 -or $Fields[0] -ne 'synthetic-ui' -or
+    $Fields[1] -ne 'ghcr.io/jmal1/selfservice-synthetic-ui' -or
+    $Fields[3] -ne $SourceSha) { throw 'manifest fields do not match the approved run' }
+if ($Fields[2] -notmatch '^sha256:[0-9a-f]{64}$') { throw 'invalid image digest' }
+
+# The CI workflow publishes the exact
+# `ghcr.io/jmal1/selfservice-synthetic-ui:$SourceSha` tag alongside the digest,
+# and the deploy contract uses that full SHA reference.
+
+$Compose = Join-Path $Work 'deploy\docker-compose.yml'
+$Service = Join-Path $Work 'deploy\synthetic-ui.service'
+$Wrapper = Join-Path $Work 'scripts\run-synthetic-ui.sh'
+$ComposeHash = (Get-FileHash -Algorithm SHA256 $Compose).Hash.ToLower()
+$ServiceHash = (Get-FileHash -Algorithm SHA256 $Service).Hash.ToLower()
+$WrapperHash = (Get-FileHash -Algorithm SHA256 $Wrapper).Hash.ToLower()
+# Byte-level CR rejection: prove the three staged text assets contain only LF line endings
+# (repository bytes). Any CR byte (0x0D) means core.autocrlf transformed the file.
+foreach ($StagedFile in @($Compose, $Service, $Wrapper)) {
+    $StagedBytes = [System.IO.File]::ReadAllBytes($StagedFile)
+    if ($StagedBytes -contains 13) {
+        throw "CR byte (0x0D) detected in $StagedFile — verify core.autocrlf=false was configured before checkout"
+    }
+}
+$Image = "$($Fields[1]):$SourceSha"
+$ComposeStage = "/tmp/docker-compose.$SourceSha.yml"
+$ServiceStage = "/tmp/synthetic-ui.$SourceSha.service"
+$WRAPPER_STAGE = "/tmp/run-synthetic-ui.$SourceSha.sh"
+
+# Operator supplies SYNTHETIC_DEPLOY_HOST (user@host) via private deploy docs.
+scp $Compose "${SYNTHETIC_DEPLOY_HOST}:$ComposeStage"
+scp $Service "${SYNTHETIC_DEPLOY_HOST}:$ServiceStage"
+scp $Wrapper "${SYNTHETIC_DEPLOY_HOST}:$WRAPPER_STAGE"
+"SOURCE_SHA=$SourceSha"
+"IMAGE=$Image"
+"COMPOSE_SHA256=$ComposeHash"
+"SERVICE_SHA256=$ServiceHash"
+"WRAPPER_SHA256=$WrapperHash"
+```
+
+Connect to the operator-supplied deploy host (see private deploy docs). Paste
+the four printed values, then perform the atomic host install. This
+idempotently disables the synthetic timer so it cannot race the file
+replacement, waits for any active oneshot run to finish, and does not restart
+the edge reverse-proxy stack:
+
+```bash
+set -euo pipefail
+
+validate_runtime() {
+  local actual_sha expected_sha
+  actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
+  expected_sha="$(printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$2" |
+    sha256sum | awk '{print $1}')"
+  test "$actual_sha" = "$expected_sha"
+}
+
+SOURCE_SHA='<printed full source SHA>'
+IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui:<printed full source SHA>'
+WRAPPER_SHA256='<printed lowercase hash>'
+COMPOSE_SHA256='<printed lowercase hash>'
+SERVICE_SHA256='<printed lowercase hash>'
+[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+[[ "$IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
+[[ "$WRAPPER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$COMPOSE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$SERVICE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+COMPOSE_STAGE="/tmp/docker-compose.$SOURCE_SHA.yml"
+SERVICE_STAGE="/tmp/synthetic-ui.$SOURCE_SHA.service"
+WRAPPER_STAGE="/tmp/run-synthetic-ui.$SOURCE_SHA.sh"
+test -f "$COMPOSE_STAGE"
+test -f "$SERVICE_STAGE"
+test -f "$WRAPPER_STAGE"
+
+if sudo test -f /opt/synthetic-ui/image.env; then
+PREVIOUS_IMAGE="$(sudo sed -n \
+  's/^SYNTHETIC_UI_IMAGE=//p' /opt/synthetic-ui/image.env)"
+if [[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]; then
+  # Normal pinned upgrade: existing install was a SHA-tagged image.
+  INSTALL_MODE=pinned
+  sudo test -f /opt/synthetic-ui/runtime.env
+  validate_runtime /opt/synthetic-ui/runtime.env false
+  PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+    "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+  CURRENT_IMAGE_ID="$(sudo docker image inspect \
+    "$CURRENT_RESOLVED_IMAGE" --format '{{.Id}}')"
+  test "$CURRENT_IMAGE_ID" = "$PREVIOUS_IMAGE_ID"
+elif [[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]; then
+  # First-migration containment retry: image.env holds the immutable digest
+  # that a prior rollback synthesised. Prove runtime=false, digest exists
+  # locally, and current Compose resolves exactly to it before proceeding.
+  INSTALL_MODE=first-migration
+  sudo test -f /opt/synthetic-ui/runtime.env
+  validate_runtime /opt/synthetic-ui/runtime.env false
+  PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+    "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+  CURRENT_RESOLVED_IMAGE="$(sudo sh -c \
+    'set -a; . /opt/synthetic-ui/image.env; exec docker compose \
+    -f /opt/synthetic-ui/app/deploy/docker-compose.yml config --images')"
+  test "$CURRENT_RESOLVED_IMAGE" = "$PREVIOUS_IMAGE"
+else
+  echo "[synthetic-ui] invalid pin format in /opt/synthetic-ui/image.env: ${PREVIOUS_IMAGE@Q}" >&2
+  exit 1
+fi
+else
+INSTALL_MODE=first-migration
+if sudo test -f /opt/synthetic-ui/runtime.env; then
+  validate_runtime /opt/synthetic-ui/runtime.env false
+fi
+PREVIOUS_IMAGE='ghcr.io/jmal1/selfservice-synthetic-ui@sha256:<operator-supplied current image digest>'
+[[ "$PREVIOUS_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+PREVIOUS_IMAGE_ID="$(sudo docker image inspect \
+  "$PREVIOUS_IMAGE" --format '{{.Id}}')"
+fi
+
+sudo systemctl disable --now synthetic-ui.timer
+STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
+while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
+  sleep 5
+  STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
+done
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP="/opt/synthetic-ui/backups/$STAMP"
+sudo install -d -m 0755 "$BACKUP"
+sudo cp -a /opt/synthetic-ui/app/deploy/docker-compose.yml "$BACKUP/"
+sudo cp -a /etc/systemd/system/synthetic-ui.service "$BACKUP/"
+if sudo test -f /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh; then
+  sudo cp -a /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh "$BACKUP/run-synthetic-ui.sh"
+else
+  sudo install -m 0755 "$WRAPPER_STAGE" "$BACKUP/run-synthetic-ui.sh"
+fi
+printf '%s\n' "$INSTALL_MODE" | sudo tee "$BACKUP/install-mode" >/dev/null
+if sudo test -f /opt/synthetic-ui/image.env; then
+  sudo cp -a /opt/synthetic-ui/image.env "$BACKUP/image.env"
+else
+  # Synthesize the proven immutable prior digest for first-migration rollback.
+  printf 'SYNTHETIC_UI_IMAGE=%s\n' "$PREVIOUS_IMAGE" |
+    sudo tee "$BACKUP/image.env" >/dev/null
+  sudo chmod 0644 "$BACKUP/image.env"
+fi
+if sudo test -f /opt/synthetic-ui/source.sha; then
+  sudo cp -a /opt/synthetic-ui/source.sha "$BACKUP/source.sha"
+fi
+if sudo test -f /opt/synthetic-ui/runtime.env; then
+  sudo cp -a /opt/synthetic-ui/runtime.env "$BACKUP/runtime.env"
+else
+  printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' |
+    sudo tee "$BACKUP/runtime.env" >/dev/null
+  sudo chmod 0644 "$BACKUP/runtime.env"
+fi
+printf '%s\n' "$PREVIOUS_IMAGE_ID" |
+  sudo tee "$BACKUP/previous-image-id" >/dev/null
+
+printf '%s  %s\n' "$WRAPPER_SHA256" "$WRAPPER_STAGE" | sha256sum -c -
+printf '%s  %s\n' "$COMPOSE_SHA256" "$COMPOSE_STAGE" | sha256sum -c -
+printf '%s  %s\n' "$SERVICE_SHA256" "$SERVICE_STAGE" | sha256sum -c -
+bash -n "$WRAPPER_STAGE"
+sudo install -m 0644 "$COMPOSE_STAGE" \
+  /opt/synthetic-ui/app/deploy/docker-compose.yml.new
+sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
+  /opt/synthetic-ui/app/deploy/docker-compose.yml
+sudo install -m 0644 "$SERVICE_STAGE" \
+  /etc/systemd/system/synthetic-ui.service.new
+sudo mv /etc/systemd/system/synthetic-ui.service.new \
+  /etc/systemd/system/synthetic-ui.service
+sudo install -d -m 0755 /opt/synthetic-ui/app/scripts
+sudo install -m 0755 "$WRAPPER_STAGE" \
+  /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new
+sudo mv /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new \
+  /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh
+printf 'SYNTHETIC_UI_IMAGE=%s\n' "$IMAGE" |
+  sudo tee /opt/synthetic-ui/image.env.new >/dev/null
+sudo chmod 0644 /opt/synthetic-ui/image.env.new
+sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
+printf 'SYNTHETIC_LIFECYCLE_ENABLED=false\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' |
+  sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null
+sudo chmod 0644 /opt/synthetic-ui/runtime.env.new
+sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
+printf '%s\n' "$SOURCE_SHA" |
+  sudo tee /opt/synthetic-ui/source.sha >/dev/null
+sudo systemctl daemon-reload
+
+RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
+  exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
+  config --images')"
+test "$RESOLVED_IMAGE" = "$IMAGE"
+validate_runtime /opt/synthetic-ui/runtime.env false
+# Initialize the bind-mount roots and repair legacy children as pwuser UID 1001.
+sudo install -d -m 0755 -o 1001 -g 1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/report/runs /opt/synthetic-ui/results
+sudo chown -R --no-dereference 1001:1001 \
+  /opt/synthetic-ui/report /opt/synthetic-ui/results
+sudo systemctl start synthetic-ui.service
+SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+test "$SERVICE_RESULT" = success
+test "$SERVICE_STATUS" = 0
+validate_runtime /opt/synthetic-ui/runtime.env false
+sudo journalctl -u synthetic-ui.service -n 100 --no-pager
+
+TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
+TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
+test "$TIMER_UNIT_STATE" = disabled
+test "$TIMER_ACTIVE_STATE" = inactive
+sudo systemctl list-timers synthetic-ui.timer --no-pager
+sudo rm -f "$COMPOSE_STAGE" "$SERVICE_STAGE" "$WRAPPER_STAGE"
+```
+
+Compose still reads `/opt/synthetic-ui/secrets/env`; the image pin contains no
+credential. The mandatory `EnvironmentFile` makes scheduled runs fail closed
+rather than accept a mutable tag or an empty pin.
+
+Rollback reads the backup's recorded install mode. A first-migration backup is
+**image-only** because its old Compose and unit used an unpinned image
+reference; the rollback image comes from the known current immutable digest
+already on the host. A pinned-upgrade backup restores only after verifying its
+immutable Compose, unit, pin, and source identity. Both modes prove the exact
+resolved image and keep the timer disabled. A pinned-upgrade rollback runs one
+direct Compose canary without invoking the restored legacy wrapper or its
+host-side retention:
+
+```bash
+set -euo pipefail
+
+validate_runtime() {
+  local actual_sha expected_sha
+  actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
+  expected_sha="$(printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$2" |
+    sha256sum | awk '{print $1}')"
+  test "$actual_sha" = "$expected_sha"
+}
+
+BACKUP='/opt/synthetic-ui/backups/<approved-timestamp>'
+sudo systemctl disable --now synthetic-ui.timer
+STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
+while [ "$STATE" != inactive ] && [ "$STATE" != failed ]; do
+  sleep 5
+  STATE="$(systemctl show synthetic-ui.service -p ActiveState --value)"
+done
+sudo systemctl reset-failed synthetic-ui.service
+test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive
+
+sudo test -f "$BACKUP/image.env"
+sudo test -f "$BACKUP/runtime.env"
+validate_runtime "$BACKUP/runtime.env" false
+sudo test -f "$BACKUP/install-mode"
+INSTALL_MODE="$(sudo cat "$BACKUP/install-mode")"
+ROLLBACK_IMAGE="$(sudo sed -n 's/^SYNTHETIC_UI_IMAGE=//p' "$BACKUP/image.env")"
+
+if [ "$INSTALL_MODE" = first-migration ]; then
+  [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui@sha256:[0-9a-f]{64}$ ]]
+  sudo docker image inspect "$ROLLBACK_IMAGE" --format '{{.Id}}' >/dev/null
+  # Retain the newly installed immutable files; restore only the prior pin.
+  sudo grep -F 'SYNTHETIC_UI_IMAGE' \
+    /opt/synthetic-ui/app/deploy/docker-compose.yml
+  sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
+    /etc/systemd/system/synthetic-ui.service
+elif [ "$INSTALL_MODE" = pinned ]; then
+  [[ "$ROLLBACK_IMAGE" =~ ^ghcr\.io/jmal1/selfservice-synthetic-ui:[0-9a-f]{40}$ ]]
+  sudo test -f "$BACKUP/previous-image-id"
+  ROLLBACK_IMAGE_ID="$(sudo cat "$BACKUP/previous-image-id")"
+  [[ "$ROLLBACK_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+  LOCAL_ROLLBACK_IMAGE_ID="$(sudo docker image inspect \
+    "$ROLLBACK_IMAGE" --format '{{.Id}}')"
+  test "$LOCAL_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+  sudo test -f "$BACKUP/source.sha"
+  ROLLBACK_SOURCE_SHA="$(sudo cat "$BACKUP/source.sha")"
+  [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+  sudo grep -F 'SYNTHETIC_UI_IMAGE' "$BACKUP/docker-compose.yml"
+  sudo grep -F 'EnvironmentFile=/opt/synthetic-ui/image.env' \
+    "$BACKUP/synthetic-ui.service"
+  sudo install -m 0644 "$BACKUP/docker-compose.yml" \
+    /opt/synthetic-ui/app/deploy/docker-compose.yml.new
+  sudo mv /opt/synthetic-ui/app/deploy/docker-compose.yml.new \
+    /opt/synthetic-ui/app/deploy/docker-compose.yml
+  sudo install -m 0644 "$BACKUP/synthetic-ui.service" \
+    /etc/systemd/system/synthetic-ui.service.new
+  sudo mv /etc/systemd/system/synthetic-ui.service.new \
+    /etc/systemd/system/synthetic-ui.service
+  printf '%s\n' "$ROLLBACK_SOURCE_SHA" |
+    sudo tee /opt/synthetic-ui/source.sha.new >/dev/null
+  sudo mv /opt/synthetic-ui/source.sha.new /opt/synthetic-ui/source.sha
+else
+  echo "Unsupported backup install mode: $INSTALL_MODE" >&2
+  exit 1
+fi
+
+sudo test -f "$BACKUP/run-synthetic-ui.sh"
+sudo install -m 0755 "$BACKUP/run-synthetic-ui.sh" \
+  /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new
+sudo mv /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh.new \
+  /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh
+sudo install -m 0644 "$BACKUP/image.env" /opt/synthetic-ui/image.env.new
+sudo mv /opt/synthetic-ui/image.env.new /opt/synthetic-ui/image.env
+sudo install -m 0644 "$BACKUP/runtime.env" /opt/synthetic-ui/runtime.env.new
+sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
+sudo systemctl daemon-reload
+RESOLVED_IMAGE="$(sudo sh -c 'set -a; . /opt/synthetic-ui/image.env; \
+  exec docker compose -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
+  config --images')"
+test "$RESOLVED_IMAGE" = "$ROLLBACK_IMAGE"
+if [ "$INSTALL_MODE" = pinned ]; then
+  RESOLVED_IMAGE_ID="$(sudo docker image inspect \
+    "$RESOLVED_IMAGE" --format '{{.Id}}')"
+  test "$RESOLVED_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+fi
+validate_runtime /opt/synthetic-ui/runtime.env false
+TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
+TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
+test "$TIMER_UNIT_STATE" = disabled
+test "$TIMER_ACTIVE_STATE" = inactive
+if [ "$INSTALL_MODE" = pinned ]; then
+  ROLLBACK_RUN_ID="rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  [[ "$ROLLBACK_RUN_ID" =~ ^rollback-[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]]
+  set +e
+  sudo env \
+    ROLLBACK_IMAGE="$ROLLBACK_IMAGE" \
+    PLAYWRIGHT_REPORT_RUN_ID="$ROLLBACK_RUN_ID" \
+    sh -c '
+      set -aeu
+      . /opt/synthetic-ui/image.env
+      . /opt/synthetic-ui/runtime.env
+      test "$SYNTHETIC_UI_IMAGE" = "$ROLLBACK_IMAGE"
+      exec docker compose \
+        -f /opt/synthetic-ui/app/deploy/docker-compose.yml \
+        run --rm --no-deps --pull never monitor
+    '
+  ROLLBACK_CANARY_STATUS=$?
+  set -e
+  test "$ROLLBACK_CANARY_STATUS" = 0
+  sudo test -d "/opt/synthetic-ui/report/runs/$ROLLBACK_RUN_ID"
+elif [ "$INSTALL_MODE" = first-migration ]; then
+  # Containment rollback only: keep the new unit/wrapper and do not start it.
+  sudo test -f /etc/systemd/system/synthetic-ui.service
+  sudo test -f /opt/synthetic-ui/app/scripts/run-synthetic-ui.sh
+else
+  echo "Unsupported backup install mode: $INSTALL_MODE" >&2
+  exit 1
+fi
+test "$(systemctl show synthetic-ui.service -p ActiveState --value)" = inactive
+TIMER_UNIT_STATE="$(systemctl show synthetic-ui.timer -p UnitFileState --value)"
+TIMER_ACTIVE_STATE="$(systemctl show synthetic-ui.timer -p ActiveState --value)"
+test "$TIMER_UNIT_STATE" = disabled
+test "$TIMER_ACTIVE_STATE" = inactive
+```
+
+> **Danger — containment rollback only.** Report and results ownership migration
+> is forward-only; guessing a recursive UID1000 restoration is unsafe. The pinned
+> rollback therefore restores the prior files and pin but never starts the
+> restored legacy service/wrapper or runs host-side retention. Keep the timer
+> disabled and do not enable scheduling until the forward host hardening is
+> reinstalled.
+
+### Explicit timer re-enable after containment
+
+Do not bundle timer re-enable with image install or rollback. It is a separate
+operator-approved action only after the non-mutating pinned UI one-shot is
+green and monitoring confirms the ESXi1 NFS41 stale-handle rate is `0` and APD
+count is `0`. The recovery runs one lifecycle-enabled one-shot while the timer
+remains disabled, checks storage again, and enables the timer only if all gates
+remain green. Any failure atomically restores lifecycle containment to `false`.
+
+```bash
+set -euo pipefail
+
+validate_runtime() {
+  local actual_sha expected_sha
+  actual_sha="$(sudo sha256sum "$1" | awk '{print $1}')"
+  expected_sha="$(printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$2" |
+    sha256sum | awk '{print $1}')"
+  test "$actual_sha" = "$expected_sha"
+}
+
+STORAGE_STALE_HANDLE_RATE='<verified monitoring value>'
+APD_COUNT='<verified monitoring value>'
+UI_CHECKS='<verified pinned one-shot result>'
+OPERATOR_APPROVAL='<approved change/ticket reference>'
+test "$STORAGE_STALE_HANDLE_RATE" = 0
+test "$APD_COUNT" = 0
+test "$UI_CHECKS" = green
+test -n "$OPERATOR_APPROVAL"
+test "$OPERATOR_APPROVAL" != '<approved change/ticket reference>'
+
+set_lifecycle() {
+  if ! printf \
+    'SYNTHETIC_LIFECYCLE_ENABLED=%s\nSYNTHETIC_EXPECT_MAINTENANCE=false\n' "$1" |
+    sudo tee /opt/synthetic-ui/runtime.env.new >/dev/null; then
+    return 1
+  fi
+  if ! sudo chmod 0644 /opt/synthetic-ui/runtime.env.new; then
+    return 1
+  fi
+  sudo mv /opt/synthetic-ui/runtime.env.new /opt/synthetic-ui/runtime.env
+}
+
+restore_containment() {
+  local cleanup_failed=0
+  if ! sudo systemctl disable --now synthetic-ui.timer; then
+    echo 'Failed to disable synthetic-ui.timer during cleanup' >&2
+    cleanup_failed=1
+  fi
+  if ! set_lifecycle false; then
+    echo 'Failed to restore lifecycle=false during cleanup' >&2
+    cleanup_failed=1
+  fi
+  if [ "$cleanup_failed" -ne 0 ]; then
+    echo 'MANUAL INTERVENTION REQUIRED: verify timer and runtime containment' >&2
+    return 1
+  fi
+}
+
+test "$(systemctl show synthetic-ui.timer -p UnitFileState --value)" = disabled
+test "$(systemctl show synthetic-ui.timer -p ActiveState --value)" = inactive
+validate_runtime /opt/synthetic-ui/runtime.env false
+SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+test "$SERVICE_RESULT" = success
+test "$SERVICE_STATUS" = 0
+trap restore_containment ERR
+set_lifecycle true
+validate_runtime /opt/synthetic-ui/runtime.env true
+sudo systemctl start synthetic-ui.service
+SERVICE_RESULT="$(systemctl show synthetic-ui.service -p Result --value)"
+SERVICE_STATUS="$(systemctl show synthetic-ui.service -p ExecMainStatus --value)"
+test "$SERVICE_RESULT" = success
+test "$SERVICE_STATUS" = 0
+
+POST_LIFECYCLE_STORAGE_STALE_HANDLE_RATE='<fresh verified monitoring value>'
+POST_LIFECYCLE_APD_COUNT='<fresh verified monitoring value>'
+test "$POST_LIFECYCLE_STORAGE_STALE_HANDLE_RATE" = 0
+test "$POST_LIFECYCLE_APD_COUNT" = 0
+sudo systemctl enable --now synthetic-ui.timer
+test "$(systemctl show synthetic-ui.timer -p UnitFileState --value)" = enabled
+test "$(systemctl show synthetic-ui.timer -p ActiveState --value)" = active
+trap - ERR
+sudo systemctl list-timers synthetic-ui.timer --no-pager
+```
+
+## Metrics
+
+Each completed, non-skipped test emits four series to Pushgateway:
+
+| metric                                          | value           |
+|-------------------------------------------------|-----------------|
+| `crucible_synthetic_ui_check_success{check=X}`  | 0 or 1          |
+| `crucible_synthetic_ui_check_duration_seconds{check=X}` | seconds  |
+| `crucible_synthetic_ui_check_last_run_timestamp`| unix epoch (s)  |
+| `crucible_synthetic_ui_check_info` | title, description, severity, and runbook labels |
+| `crucible_synthetic_ui_overall_check_count` | completed, non-skipped checks |
+| `crucible_synthetic_ui_overall_expected_check_count` | checks expected for this configuration |
+| `crucible_synthetic_ui_overall_coverage_ratio` | completed / expected checks |
+
+Pushgateway updates use `PUT` to replace the complete
+`job=crucible_synthetic_ui,layer=ui` group. A lifecycle-disabled run therefore
+removes the prior `create_and_destroy_synthetic_pod` series instead of leaving
+it stale or reporting it as passed. Unexpected skips reduce coverage and force
+`overall_success` to `0`. Intentionally filtered or targeted Playwright runs
+never publish, because a partial `PUT` would erase unselected checks from the
+production group. An unfiltered production run that discovers fewer checks
+than its canonical configuration still replaces the group with reduced
+coverage and `overall_success=0`, so stale green metrics cannot survive.
+
+### Provisioning lifecycle gate
+
+`SYNTHETIC_LIFECYCLE_ENABLED` accepts only `true` or `false`; invalid and empty
+values fail suite configuration. It defaults to `true` for backward
+compatibility in local/generic environments. The production compose and
+systemd examples pin it to `false`. When enabled, `SYNTHETIC_TEMPLATE_NAME`
+is required at startup; the suite refuses to run rather than silently skip its
+destructive coverage.
+
+`SYNTHETIC_EXPECT_MAINTENANCE` also accepts only `true` or `false` and defaults
+to `false`. When true, the non-destructive provisioning contract check asserts
+maintenance mode. When false, the same check asserts open provisioning. Both
+modes require lifecycle checks to be disabled. Maintenance mode asserts the
+exact authenticated API response:
+
+```json
+{"enabled":false,"message":"Provisioning is temporarily unavailable for maintenance."}
+```
+
+Open mode asserts:
+
+```json
+{"enabled":true,"message":"Provisioning is available."}
+```
+
+With instructor credentials and `SYNTHETIC_TEMPLATE_NAME` configured, the
+current expected check counts are:
+
+| lifecycle | expected maintenance | expected checks |
+|-----------|----------------------|-----------------|
+| `true`    | `false`              | 25              |
+| `false`   | `false`              | 25              |
+| `false`   | `true`               | 25              |
+
+The `true`/`true` combination is rejected. If the optional instructor identity
+is absent, its six statically skipped checks are excluded from the dynamic
+expected count while `admin_identity_configured` remains and fails visibly.
+
+The provisioning contract check never creates a fixture. In maintenance mode, if an existing cleanup-eligible pod is available, it verifies that Add VM is gated while Delete Pod remains enabled. If none exists, the result is annotated with that limitation; the status API, banner, dashboard, and shared provisioning route are still checked without weakening their assertions. In open mode, the same wizard paths must reach enabled final actions without invoking mutations.
+
+Grafana alert (paired with the Go suite's `layer=api`):
+
+```
+expr: max_over_time(crucible_synthetic_ui_check_success[30m]) == 0
+for:  30m
+labels:
+  severity: page
+  title: "Crucible UI synthetic check failing"
+```
+
+## Why a separate repo (not part of selfservice-ui)
+
+- **Deploys to an edge runner host, not K8s.** Different runtime, different
+  release cadence.
+- **Different language / different tooling.** Playwright lives best
+  in a TS project with its own `package.json` and `node_modules`.
+- **Different secrets.** The synthetic test account credentials must
+  never end up in the customer-facing UI bundle.
+- **Independent rollback.** A broken synthetic spec must not block a
+  UI release.
+
+## Operator runbook
+
+### "The UI synthetic alert is firing but the API one isn't"
+
+This means the API is healthy but the customer-facing path is broken.
+Most likely:
+1. **Caddy** — check reverse-proxy logs on the edge host. Look for TLS errors, upstream 5xx.
+2. **Authentik** — check the IdP health endpoint for your deployment.
+3. **UI bundle** — check `kubectl get pod -n selfservice -l app=selfservice-ui`.
+4. The synthetic suite saves screenshots on failure to
+   `/opt/synthetic-ui/app/test-results/`. SSH in and inspect the
+   newest report run under `/opt/synthetic-ui/report/runs/`.
+
+### "How do I add a new check"
+
+1. Create `tests/specs/<name>.spec.ts` modeled on an existing spec.
+2. Use the `withMetric` fixture from `tests/fixtures.ts` so it
+   automatically pushes the duration/success metrics on completion.
+3. Merge to `master`, then use the approved full-SHA-tag deployment procedure
+   above. The edge runner host does not contain a Git checkout or auto-update from Git.
+4. Add a Grafana panel for the new metric if it warrants its own
+   widget (otherwise it rolls up into the default sum dashboard).
+
+## 🔗 Related
+
+- [[Synthetic-Monitoring]] — Architecture, runbook, on-call triage
+- [[Crucible-Resume-Plan-2026-06-07]] — Overnight log; S3 lives here
