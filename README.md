@@ -737,3 +737,6 @@ Most likely:
 
 - [[Synthetic-Monitoring]] — Architecture, runbook, on-call triage
 - [[Crucible-Resume-Plan-2026-06-07]] — Overnight log; S3 lives here
+
+<!-- verified-merge noop 2026-09-11T10:49:00.2103880-07:00 -->
+
