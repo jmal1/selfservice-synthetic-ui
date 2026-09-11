@@ -7,6 +7,8 @@ self-service portal. Pairs with the internal Go API monitor at
 WebMKS console iframe, the Caddy reverse-proxy path, and the
 Authentik OIDC redirect dance.
 
+This repository is **public**. Defaults in `.env.example` and Playwright use `*.example.test` placeholders. Real deploy host, Vault password paths, and production URLs live in private [`jmal1/crucible-deploy`](https://github.com/jmal1/crucible-deploy) / operator docs — set `SYNTHETIC_*` and related env at runtime.
+
 ## What it tests
 
 | spec                          | purpose                                                              |
