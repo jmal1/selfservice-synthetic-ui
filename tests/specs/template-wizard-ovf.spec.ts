@@ -68,12 +68,16 @@ adminTest(
 		await sourceSelect.selectOption('ovf');
 
 		const checkbox = page.getByRole('checkbox', {
-			name: /Image is already generalized — do not run sysprep\/cloud-init clean/i
+			name: /Prepared appliance — skip sysprep\/cloud-init clean/i
 		});
 		await expect(
 			checkbox,
 			'OVF/OVA sources must expose the skip-generalize checkbox'
 		).toBeVisible();
+		await expect(
+			checkbox,
+			'Prepared OVA appliances default skip_generalize on so GuestOps clean is not run'
+		).toBeChecked();
 		await expect(
 			page.getByText(/Skips GuestOps generalize only \(sysprep \/ cloud-init clean\)\./i),
 			'Help text must limit the bypass to GuestOps generalize'
@@ -90,3 +94,63 @@ adminTest(
 		).not.toBeVisible();
 	}
 );
+
+adminTest('template_wizard_ova_catalog_picker', async ({ authedAdminPage: page }, testInfo) => {
+	meta(testInfo, {
+		title: 'OVF/OVA picker uses the catalog, not folder VMs',
+		description:
+			'Instructor selects OVF/OVA and sees either the empty-state Images link or a catalog ' +
+			'select with Refresh OVAs. In-flight/error rows are disabled; imported rows carry a moref. ' +
+			'An empty catalog is a closed assertion (empty-state + Images link), not a silent skip.',
+		severity: 'warning',
+		runbook:
+			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-template_wizard_ova_catalog_picker-fails'
+	});
+
+	await openTemplateWizard(page);
+
+	const sourceSelect = page.locator('select:has(option[value="ovf"])');
+	await expect(sourceSelect).not.toBeDisabled({ timeout: 15_000 });
+	await sourceSelect.selectOption('ovf');
+
+	const emptyState = page.getByText('No imported OVAs found');
+	const catalogSelect = page.getByTestId('ovf-ova-select');
+	const imagesLink = page.getByRole('link', { name: /Images page/i });
+	const refresh = page.getByRole('button', { name: /Refresh OVAs/i });
+
+	const emptyVisible = await emptyState.isVisible().catch(() => false);
+	const catalogVisible = await catalogSelect.isVisible().catch(() => false);
+
+	if (emptyVisible) {
+		await expect(
+			imagesLink,
+			'Empty OVA catalog must send the instructor to /admin/images instead of claiming there are no OVAs forever'
+		).toBeVisible();
+		await expect(refresh).toBeVisible();
+		return;
+	}
+
+	await expect(
+		catalogSelect,
+		'OVA catalog select must render when any catalog row exists (imported, importing, or error)'
+	).toBeVisible({ timeout: 10_000 });
+	await expect(refresh, 'OVA picker must have a refresh control like the ISO picker').toBeVisible();
+
+	const options = catalogSelect.locator('option');
+	const count = await options.count();
+	expect(count, 'catalog select must include the placeholder plus at least one OVA row').toBeGreaterThan(1);
+
+	for (let i = 1; i < count; i++) {
+		const opt = options.nth(i);
+		const disabled = await opt.isDisabled();
+		const text = (await opt.textContent()) ?? '';
+		if (disabled) {
+			expect(
+				text,
+				'disabled catalog rows must show importing or failed import copy'
+			).toMatch(/⏳|⚠|Importing|failed|still being/i);
+		} else {
+			expect(text, 'selectable imported OVAs must show the vCenter moref').toMatch(/vm-/i);
+		}
+	}
+});

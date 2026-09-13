@@ -79,3 +79,45 @@ adminTest('image_library_loads', async ({ authedAdminPage: page }, testInfo) => 
 			'the lifecycle-state column was removed, breaking the operator visibility feature'
 	).toBeVisible({ timeout: 10_000 });
 });
+
+adminTest('image_library_ova_moref_or_empty', async ({ authedAdminPage: page }, testInfo) => {
+	meta(testInfo, {
+		title: 'Image library shows imported OVA moref or a closed empty state',
+		description:
+			'Instructor opens /admin/images and asserts the Info column exists. If an imported OVA ' +
+			'row is present, its vCenter moref and Create template link are visible. If the library ' +
+			'is empty, the empty-state copy is visible — that is a closed assertion, not a skip.',
+		severity: 'warning',
+		runbook:
+			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-image_library_ova_moref_or_empty-fails'
+	});
+
+	await page.goto('/admin/images');
+	await expect(page.getByRole('heading', { name: 'VM Images' })).toBeVisible({ timeout: 15_000 });
+	await expect(page.getByRole('heading', { name: 'Staged images' })).toBeVisible({
+		timeout: 10_000
+	});
+	await expect(page.getByText('Loading…')).toHaveCount(0, { timeout: 15_000 });
+
+	const empty = page.getByText('No images yet. Upload one above.');
+	const moref = page.getByTestId('ova-moref');
+	const emptyVisible = await empty.isVisible().catch(() => false);
+	const morefCount = await moref.count();
+
+	if (emptyVisible) {
+		expect(morefCount, 'empty library must not claim an imported OVA moref').toBe(0);
+		return;
+	}
+
+	await expect(
+		page.getByRole('columnheader', { name: 'Info' }),
+		'Info column must remain so imported OVA morefs are visible'
+	).toBeVisible({ timeout: 10_000 });
+
+	if (morefCount > 0) {
+		await expect(moref.first()).toHaveText(/vm-/i);
+		await expect(
+			page.getByRole('link', { name: 'Create template' }).first()
+		).toHaveAttribute('href', /source_type=ovf/);
+	}
+});
