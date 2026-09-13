@@ -8,9 +8,10 @@
 // spec, before any admin-authenticated checks.
 //
 // If SYNTHETIC_ADMIN_USERNAME is not set the entire spec is skipped; the
-// admin-dependent specs (image-library, template-wizard-iso, runner-results)
+// admin-dependent specs (image-library, template-wizard-iso/ovf, workflows-authoring)
 // also check this variable and skip accordingly, so the suite degrades
 // gracefully on environments without an instructor account configured.
+// runner_results_render uses the student session and is not gated here.
 
 import { test, expect } from '@playwright/test';
 import { ensureStorageDir, adminStorageStatePath } from '../lib/fixtures.ts';
