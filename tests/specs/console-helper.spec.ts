@@ -131,7 +131,14 @@ test('console_helper_shows_credentials_without_network_for_generalized_vm', asyn
 	await expect(page.getByRole('button', { name: 'Copy User' })).toBeVisible();
 	await expect(page.getByTestId('console-helper-network')).toHaveCount(0);
 
-	await expect(page.getByRole('button', { name: 'Copy User' })).toBeEnabled();
+	const canvas = page.locator('#console-canvas');
+	await expect(canvas).toBeFocused();
+
+	await page.getByRole('button', { name: 'Copy User' }).click();
+	await expect(
+		canvas,
+		'helper Copy must not steal keyboard focus from #console-canvas'
+	).toBeFocused();
 });
 
 test('console_helper_shows_network_for_skip_generalize', async (
