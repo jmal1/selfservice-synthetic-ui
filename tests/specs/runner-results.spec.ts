@@ -1,5 +1,5 @@
-// runner-results.spec.ts — asserts that per-action assessment results render
-// in the student-owned pod testing UI for a retained completed run.
+// runner-results.spec.ts — asserts that assessment results render in the
+// student-owned pod testing UI for a retained completed run.
 //
 // Uses the ordinary synthetic student session and the normal /api/v1/pods
 // listing so the test only inspects pods visible to that student. The
@@ -11,15 +11,25 @@
 //   2. A terminal run remains attached to a still-active student pod
 //   3. The pod testing dashboard and run detail pages render without errors
 //   4. The "Workflow Results" section shows retained student-visible output
-//      (student_message, and action rows only when the API returns them)
+//      (workflow name always; student_message / action rows when the API has them)
 //
-// Hollowness guard: the spec explicitly FAILs (does NOT skip) if there are no
-// student-visible terminal runs or no retained student_message / action text.
-// Note: the student testing API strips action_results; student_message alone is
-// sufficient evidence against that live contract.
+// Hollowness guard: FAILs (does NOT skip) when no student-visible terminal run
+// retains at least one workflow_name. Requiring non-empty student_message alone
+// was too sensitive — UpdateWorkflowResultBySlug stores nil on pass, the student
+// API strips action_results, and smoke/pass playlists emit no STUDENT_MSG. That
+// made the check depend on a manually seeded fixture message rather than the
+// live render contract. Prefer student_message when present; accept name-only
+// evidence for healthy passes. Discovery uses the run-history endpoint (up to
+// 100) rather than dashboard recent_runs (10) so a seeded fail message cannot
+// age out of the window and turn the check red.
 
 import { expect, test } from '../lib/fixtures.ts';
 import { parsePodSummaries } from '../lib/maintenance.ts';
+import {
+	findRenderEvidence,
+	isTerminalRunStatus,
+	type WorkflowResultSummary
+} from '../lib/runner-results.ts';
 import { meta } from '../lib/synthetic.ts';
 
 interface RunSummary {
@@ -29,41 +39,23 @@ interface RunSummary {
 	started_at?: string | null;
 }
 
-interface ActionResultSummary {
-	action: string;
-	status: string;
-	message?: string | null;
-	exit_code: number;
-	duration_ms: number;
-}
-
-interface WorkflowResultSummary {
-	id: string;
-	workflow_name: string;
-	status: string;
-	student_message?: string | null;
-	action_results?: ActionResultSummary[];
-}
-
 interface PodTestingRunDetail extends RunSummary {
 	results?: WorkflowResultSummary[];
 }
-
-const ACTIVE_STATUSES = new Set(['pending', 'provisioning', 'running']);
 
 test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 	meta(testInfo, {
 		title: 'Student-owned assessment run results render',
 		description:
 			'Finds a terminal assessment run attached to the logged-in synthetic student\'s own pods via ' +
-			'GET /api/v1/pods, verifies the pod testing dashboard + history pages, then navigates to the ' +
-			'completed run detail and asserts the workflow/action output content visible to the student. ' +
-			'Catches broken results rendering, a stalled runner that never writes results back, or a ' +
-			'broken dashboard navigation path. Deliberately FAILs (does not skip) if no retained student-owned ' +
-			'run exists in production.',
+			'GET /api/v1/pods + /testing/runs history, verifies the pod testing dashboard + history pages, ' +
+			'then navigates to the completed run detail and asserts Workflow Results render (workflow name, ' +
+			'and student_message / action output when retained). Catches broken results rendering, a stalled ' +
+			'runner that never writes results back, or a broken dashboard navigation path. Deliberately FAILs ' +
+			'(does not skip) if no retained student-owned run with workflow results exists in production.',
 		severity: 'warning',
 		runbook:
-			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-runner_results_render-fails'
+			'https://github.com/jmal1/Crucible/blob/main/future/Synthetic-Monitoring.md#when-runner_results_render-fails'
 	});
 
 	const podsResp = await page.request.get('/api/v1/pods', {
@@ -83,42 +75,24 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 	).toBeGreaterThan(0);
 
 	const findRetainedTerminalRun = async (pods: Array<{ id: string }>) => {
-		const candidateRuns: Array<{ podId: string; run: RunSummary }> = [];
+		let podsInspected = 0;
+		let terminalCandidates = 0;
+		let detailLookups = 0;
+
+		// Prefer a run that still carries student-facing text when available,
+		// but fall back to name-only evidence so healthy passes are not red.
+		let nameOnlyMatch:
+			| {
+					podId: string;
+					run: RunSummary;
+					evidence: NonNullable<ReturnType<typeof findRenderEvidence>>;
+			  }
+			| undefined;
+
 		for (const pod of pods) {
 			const podId = pod.id;
-			const dashboardResp = await page.request.get(`/api/v1/pods/${podId}/testing`, {
-				headers: { accept: 'application/json' },
-				failOnStatusCode: false,
-				timeout: 15_000
-			});
-			if (dashboardResp.status() === 404) continue;
-			if (dashboardResp.status() !== 200) {
-				throw new Error(
-					`GET /api/v1/pods/${podId}/testing returned ${dashboardResp.status()} for a student-owned pod. ` +
-						`This is not a normal destroyed-pod 404 and should be investigated.`
-				);
-			}
-			const dashboard = await dashboardResp.json();
-			// API encodes a nil Go slice as JSON null (GetRecentRunsForPod with
-			// zero rows). UI already uses `recent_runs ?? []`; treat null the
-			// same and keep scanning other student pods for a retained run.
-			const recentRuns = dashboard?.recent_runs ?? [];
-			if (!Array.isArray(recentRuns)) {
-				throw new Error(
-					`GET /api/v1/pods/${podId}/testing returned a non-array recent_runs payload for a student-owned pod`
-				);
-			}
-			for (const candidate of (recentRuns as RunSummary[]).slice(0, 25)) {
-				if (!candidate?.id || ACTIVE_STATUSES.has((candidate.status ?? '').toLowerCase())) continue;
-				candidateRuns.push({ podId, run: candidate });
-				if (candidateRuns.length >= 25) break;
-			}
-			if (candidateRuns.length >= 25) break;
-		}
+			podsInspected += 1;
 
-		let triedCount = 0;
-		for (const { podId, run } of candidateRuns.slice(0, 25)) {
-			triedCount += 1;
 			const historyResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs`, {
 				headers: { accept: 'application/json' },
 				failOnStatusCode: false,
@@ -127,74 +101,77 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 			if (historyResp.status() === 404) continue;
 			if (historyResp.status() !== 200) {
 				throw new Error(
-					`GET /api/v1/pods/${podId}/testing/runs returned ${historyResp.status()} for student-owned run ${run.id}; ` +
-						`this is not a normal destroyed-pod 404 and should be investigated.`
+					`GET /api/v1/pods/${podId}/testing/runs returned ${historyResp.status()} for a student-owned pod. ` +
+						`This is not a normal destroyed-pod 404 and should be investigated.`
 				);
 			}
 			const history = await historyResp.json();
-			if (!Array.isArray(history) || !(history as RunSummary[]).some((candidate) => candidate.id === run.id)) {
-				continue;
-			}
-
-			const detailResp = await page.request.get(`/api/v1/pods/${podId}/testing/runs/${run.id}`, {
-				headers: { accept: 'application/json' },
-				failOnStatusCode: false,
-				timeout: 15_000
-			});
-			if (detailResp.status() === 404) continue;
-			if (detailResp.status() !== 200) {
+			if (!Array.isArray(history)) {
 				throw new Error(
-					`GET /api/v1/pods/${podId}/testing/runs/${run.id} returned ${detailResp.status()} for the student-owned pod; ` +
-						`this is not a normal destroyed-pod 404 and should be investigated.`
+					`GET /api/v1/pods/${podId}/testing/runs returned a non-array payload for a student-owned pod`
 				);
 			}
-			const detail: PodTestingRunDetail = await detailResp.json();
-			if (detail.id !== run.id || ACTIVE_STATUSES.has((detail.status ?? '').toLowerCase())) {
-				continue;
+
+			for (const candidate of (history as RunSummary[]).slice(0, 100)) {
+				if (!candidate?.id || !isTerminalRunStatus(candidate.status)) continue;
+				terminalCandidates += 1;
+				detailLookups += 1;
+
+				const detailResp = await page.request.get(
+					`/api/v1/pods/${podId}/testing/runs/${candidate.id}`,
+					{
+						headers: { accept: 'application/json' },
+						failOnStatusCode: false,
+						timeout: 15_000
+					}
+				);
+				if (detailResp.status() === 404) continue;
+				if (detailResp.status() !== 200) {
+					throw new Error(
+						`GET /api/v1/pods/${podId}/testing/runs/${candidate.id} returned ${detailResp.status()} for the student-owned pod; ` +
+							`this is not a normal destroyed-pod 404 and should be investigated.`
+					);
+				}
+				const detail: PodTestingRunDetail = await detailResp.json();
+				if (detail.id !== candidate.id || !isTerminalRunStatus(detail.status)) {
+					continue;
+				}
+
+				const evidence = findRenderEvidence(detail.results);
+				if (!evidence) continue;
+
+				if (!evidence.nameOnly) {
+					return { podId, run: candidate, evidence, podsInspected, terminalCandidates, detailLookups };
+				}
+				if (!nameOnlyMatch) {
+					nameOnlyMatch = { podId, run: candidate, evidence };
+				}
 			}
+		}
 
-			const workflowWithOutput = (detail.results ?? []).find((result) => {
-				const actionResults = result.action_results ?? [];
-				const hasActionResults = actionResults.length > 0;
-				const hasStudentText = (result.student_message ?? '').trim().length > 0;
-				const hasActionMessage = actionResults.some((action) => (action.message ?? '').trim().length > 0);
-				// Student GET /pods/{id}/testing/runs/{runId} deliberately strips
-				// action_results (selfservice-api handlers/testing.go). Student-visible
-				// retained output is therefore student_message and/or any action rows
-				// the API still returns. Do not require action_results when a non-empty
-				// student_message is present — that was an impossible hollowness guard
-				// against the live student API contract.
-				return hasStudentText || (hasActionResults && hasActionMessage);
-			});
-			if (!workflowWithOutput) continue;
-
-			const evidenceAction = (workflowWithOutput.action_results ?? []).find(
-				(action) => (action.message ?? '').trim().length > 0
-			);
-			const evidenceText =
-				(workflowWithOutput.student_message ?? '').trim() || evidenceAction?.message?.trim() || '';
-			if (!evidenceText) continue;
-
-			return { podId, run, workflowWithOutput, evidenceAction, evidenceText, triedCount };
+		if (nameOnlyMatch) {
+			return {
+				...nameOnlyMatch,
+				podsInspected,
+				terminalCandidates,
+				detailLookups
+			};
 		}
 
 		throw new Error(
-			`No terminal assessment run with actionable student-visible workflow output remained attached to a student-visible pod after inspecting ` +
-				`${triedCount}/${candidateRuns.length} candidate runs from the first ${studentPods.length} student-owned pods. ` +
-				`Each candidate either had pod routes return 404 after completion (destroyed smoke pod), it was still active, or it ` +
-				`did not retain non-empty student_message (or action message when action_results are returned) in the testing API.`
+			`No terminal assessment run with student-visible workflow results remained attached to a student-visible pod after inspecting ` +
+				`${podsInspected} pods (${terminalCandidates} terminal candidates, ${detailLookups} detail lookups). ` +
+				`Each candidate either had pod routes return 404 after completion (destroyed smoke pod), was still active, or ` +
+				`had no workflow_name on any result. Keep an active student-owned pod with at least one completed run that retained results ` +
+				`(fixture ui-runner-results-fixture is the usual seed).`
 		);
 	};
 
 	const retainedRun = await findRetainedTerminalRun(studentPods);
-	const { podId, run: completedRun, workflowWithOutput, evidenceAction, evidenceText } = retainedRun;
-	if (!workflowWithOutput || !evidenceText) {
-		throw new Error(
-			`No completed workflow result on ${completedRun.id} retains non-empty student_message ` +
-				`(or action message when action_results are present). The run is terminal and the pod is still visible to the student, ` +
-				`but the API returned no actionable workflow output to render in the testing dashboard/detail UI.`
-		);
-	}
+	const { podId, run: completedRun, evidence } = retainedRun;
+	const workflowWithOutput = evidence.workflow;
+	const evidenceAction = evidence.evidenceAction;
+	const evidenceText = evidence.studentText;
 
 	await page.goto(`/pods/${podId}/testing`);
 	await expect(page, 'testing dashboard route should render after navigation').toHaveURL(
@@ -271,42 +248,40 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 			'Action results table must have at least one row — a completed workflow with zero action records is a runner data regression'
 		).toBeGreaterThan(0);
 
-		const workflowText = workflowWithOutput.student_message?.trim();
-		if (workflowText) {
-			const workflowMessage = workflowPicker.getByText(workflowText, { exact: true });
-			await expect(
-				workflowMessage,
-				`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message as its own paragraph`
-			).toHaveText(workflowText);
-		} else if (evidenceAction) {
-			const actionRow = actionRows
-				.filter({ has: page.getByText(evidenceAction.action, { exact: true }) })
-				.first();
-			await expect(
-				actionRow.locator('td').nth(0),
-				`Expected the "${evidenceAction.action}" row to render the exact action name in the first cell`
-			).toHaveText(evidenceAction.action);
-			await expect(
-				actionRow.locator('td').nth(3),
-				`Expected action "${evidenceAction.action}" to render the exact non-empty action output message in the fourth cell`
-			).toHaveText(evidenceAction.message!.trim());
-		} else {
-			throw new Error(
-				`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} had no visible message evidence to assert.`
-			);
+		if (evidenceText && !evidence.nameOnly) {
+			const workflowText = (workflowWithOutput.student_message ?? '').trim();
+			if (workflowText) {
+				const workflowMessage = workflowPicker.getByText(workflowText, { exact: true });
+				await expect(
+					workflowMessage,
+					`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message as its own paragraph`
+				).toHaveText(workflowText);
+			} else if (evidenceAction) {
+				const actionRow = actionRows
+					.filter({ has: page.getByText(evidenceAction.action, { exact: true }) })
+					.first();
+				await expect(
+					actionRow.locator('td').nth(0),
+					`Expected the "${evidenceAction.action}" row to render the exact action name in the first cell`
+				).toHaveText(evidenceAction.action);
+				await expect(
+					actionRow.locator('td').nth(3),
+					`Expected action "${evidenceAction.action}" to render the exact non-empty action output message in the fourth cell`
+				).toHaveText(evidenceAction.message!.trim());
+			}
 		}
-	} else {
-		const workflowText = workflowWithOutput.student_message?.trim();
-		if (!workflowText) {
-			throw new Error(
-				`Workflow ${workflowWithOutput.workflow_name} on ${completedRun.id} returned no action_results ` +
-					`(expected for student role) and no student_message to assert on the detail page.`
-			);
-		}
-		const workflowMessage = page.getByText(workflowText, { exact: true }).first();
+	} else if (evidenceText && !evidence.nameOnly) {
+		const workflowMessage = page.getByText(evidenceText, { exact: true }).first();
 		await expect(
 			workflowMessage,
 			`Expected workflow "${workflowWithOutput.workflow_name}" to render the exact student message on the run detail page`
 		).toBeVisible({ timeout: 10_000 });
+	} else {
+		// Name-only path: student pass with stripped action_results and null student_message.
+		// The workflow picker visibility assertion above is the hollowness proof.
+		await expect(
+			workflowPicker.getByText(workflowWithOutput.workflow_name, { exact: true }),
+			`Expected workflow name "${workflowWithOutput.workflow_name}" to remain visible after expand`
+		).toBeVisible();
 	}
 });
