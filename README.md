@@ -20,6 +20,7 @@ This repository is **public**. Defaults in `.env.example` and Playwright use `*.
 | `workflow-list.spec.ts`       | `/admin/workflows` 403 for non-admins (synthetic is a student role)  |
 | `console-and-provisioning-regressions.spec.ts` | Supporting WMKS canvas keyboard delivery + provisioning banner stability |
 | `console-guest-keyboard-nonce.spec.ts` | Gate B2: physical nonce through KeyboardManager2 (Ubuntu) + Windows control |
+| `console-helper.spec.ts` | Stubbed console helper: credentials always; network for skip_generalize / assign_ip=false; Copy keeps canvas focus |
 | `healthz.spec.ts`             | Anonymous `/healthz` returns 200 with `status: ok`                   |
 | `zz-logout.spec.ts`           | Sign out terminates the session and does not silently re-auth (runs last) |
 
@@ -681,9 +682,9 @@ current expected check counts are:
 
 | lifecycle | expected maintenance | expected checks |
 |-----------|----------------------|-----------------|
-| `true`    | `false`              | 26              |
-| `false`   | `false`              | 26              |
-| `false`   | `true`               | 26              |
+| `true`    | `false`              | 29              |
+| `false`   | `false`              | 29              |
+| `false`   | `true`               | 29              |
 
 The `true`/`true` combination is rejected. If the optional instructor identity
 is absent, its six statically skipped checks are excluded from the dynamic
