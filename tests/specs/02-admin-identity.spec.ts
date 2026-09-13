@@ -3,13 +3,14 @@
 //
 // Why this file exists
 // --------------------
-// image-library, both template-wizard specs and runner-results all need an
-// instructor-role session, and all five checks call `adminTest.skip()` when
-// SYNTHETIC_ADMIN_USERNAME is unset. The Pushgateway reporter deliberately
-// does not push a result for a skipped test (pushgateway-reporter.ts), and
-// pushResults PUTs the whole metric group, which Pushgateway replaces
-// wholesale. So an environment without instructor credentials does not get
-// five RED checks - it gets five checks that DO NOT EXIST.
+// image-library, both template-wizard specs, and workflows-authoring need an
+// instructor-role session, and those checks call `adminTest.skip()` when
+// SYNTHETIC_ADMIN_USERNAME is unset. (runner_results_render is student-owned and
+// does not use this gate.) The Pushgateway reporter deliberately does not push
+// a result for a skipped test (pushgateway-reporter.ts), and pushResults PUTs
+// the whole metric group, which Pushgateway replaces wholesale. So an
+// environment without instructor credentials does not get RED checks for those
+// specs — it gets checks that DO NOT EXIST.
 //
 // Every alert we have is shaped `1 - crucible_synthetic_ui_check_success > 0`,
 // which cannot match a series that is absent. The board would read a clean
@@ -36,7 +37,7 @@ test('admin_identity_configured', async ({}, testInfo) => {
 		title: 'Instructor synthetic identity is configured',
 		description:
 			'Reports whether an instructor-role account is configured for the UI synthetic suite. ' +
-			'When it is not, the image library, template wizard, authoring, and run results checks skip and push ' +
+			'When it is not, the image library, template wizard, and authoring checks skip and push ' +
 			'NO metrics at all, so their absence cannot trigger any alert and the admin UI silently ' +
 			'stops being tested. Set SYNTHETIC_ADMIN_USERNAME and SYNTHETIC_ADMIN_PASSWORD in the ' +
 			'operator secrets env file to restore that coverage.',
@@ -51,7 +52,7 @@ test('admin_identity_configured', async ({}, testInfo) => {
 	expect(
 		Boolean(username && password),
 		'SYNTHETIC_ADMIN_USERNAME / SYNTHETIC_ADMIN_PASSWORD are not set, so the instructor-role ' +
-			'UI checks (image library, template wizard, authoring, and runner results) are ' +
+			'UI checks (image library, template wizard, and authoring) are ' +
 			'skipping and pushing no metrics. Their absence is invisible to every alert we have. ' +
 			'Configure both in the operator secrets env file (see private deploy docs).'
 	).toBe(true);
