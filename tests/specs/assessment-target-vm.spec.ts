@@ -99,10 +99,16 @@ test('assessment_target_vm_shown', async ({ authedPage: page }, testInfo) => {
 			if (!target?.pod_vm_id || !target.display_name?.trim()) continue;
 			const playlist = (target.playlists ?? []).find((p) => p?.id && p?.name);
 			if (!playlist) continue;
-			selected = { podId: pod.id, target, playlist, dashboard };
-			break;
+			const candidate = { podId: pod.id, target, playlist, dashboard };
+			// Prefer a pod that already has recent runs so the Assessed VM column exists
+			// (empty state is "No runs yet." with no table headers).
+			if ((dashboard.recent_runs ?? []).length > 0) {
+				selected = candidate;
+				break;
+			}
+			selected ??= candidate;
 		}
-		if (selected) break;
+		if (selected && (selected.dashboard.recent_runs ?? []).length > 0) break;
 	}
 
 	expect(
@@ -144,12 +150,20 @@ test('assessment_target_vm_shown', async ({ authedPage: page }, testInfo) => {
 		'Each assessment offer must expose a Run All control tied to that VM'
 	).toBeVisible();
 
+	const recentRuns = dashboard.recent_runs ?? [];
+	if (recentRuns.length === 0) {
+		await expect(
+			page.getByText('No runs yet.'),
+			'Empty recent-runs state must not render a table (no Assessed VM header)'
+		).toBeVisible();
+		return;
+	}
+
 	await expect(
 		page.getByRole('columnheader', { name: 'Assessed VM' }),
-		'Recent Runs table must include an Assessed VM column'
+		'Recent Runs table must include an Assessed VM column when runs exist'
 	).toBeVisible({ timeout: 15_000 });
 
-	const recentRuns = dashboard.recent_runs ?? [];
 	const attributed = recentRuns.find(
 		(r) => r?.id && typeof r.target_vm_name === 'string' && r.target_vm_name.trim() !== ''
 	);
@@ -161,8 +175,7 @@ test('assessment_target_vm_shown', async ({ authedPage: page }, testInfo) => {
 		const anyTerminal = recentRuns.find((r) => r?.id);
 		expect(
 			anyTerminal,
-			'No recent runs on this pod yet; selector assertions already passed. ' +
-				'If a completed run exists without target_vm_name, restore attribution before merging.'
+			'A recent run exists without target_vm_name; restore attribution before merging.'
 		).toBeUndefined();
 		return;
 	}

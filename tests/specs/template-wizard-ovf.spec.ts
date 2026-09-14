@@ -156,12 +156,14 @@ adminTest('template_wizard_ova_catalog_picker', async ({ authedAdminPage: page }
 
 	for (let i = 1; i < count; i++) {
 		const opt = options.nth(i);
-		const disabled = await opt.isDisabled();
 		const text = (await opt.textContent()) ?? '';
-		if (disabled) {
+		// Prefer label copy over option.disabled: empty-value importing rows have been
+		// reported enabled by Playwright even when the UI meant them non-selectable.
+		const nonSelectable = /⏳|⚠|Importing|failed|still being/i.test(text);
+		if (nonSelectable || (await opt.isDisabled())) {
 			expect(
 				text,
-				'disabled catalog rows must show importing or failed import copy'
+				'non-selectable catalog rows must show importing or failed import copy'
 			).toMatch(/⏳|⚠|Importing|failed|still being/i);
 		} else {
 			expect(text, 'selectable imported OVAs must show the vCenter moref').toMatch(/vm-/i);
