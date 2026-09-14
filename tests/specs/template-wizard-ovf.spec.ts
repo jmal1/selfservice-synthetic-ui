@@ -19,10 +19,11 @@ async function openTemplateWizard(page: import('@playwright/test').Page) {
 
 adminTest('template_wizard_ovf_option', async ({ authedAdminPage: page }, testInfo) => {
 	meta(testInfo, {
-		title: 'OVF/OVA option present and enabled in template wizard',
+		title: 'Imported OVA option present and enabled in template wizard',
 		description:
 			'Instructor opens /admin/templates/new and asserts the source-type selector offers the ' +
-			'OVF/OVA option and remains enabled. Guards the Wave B source_type=ovf authoring path.',
+			'Imported OVA option (value=ovf) and remains enabled. Upload is .ova only; this label must ' +
+			'not say OVF.',
 		severity: 'warning',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-template_wizard_ovf_option-fails'
@@ -44,8 +45,8 @@ adminTest('template_wizard_ovf_option', async ({ authedAdminPage: page }, testIn
 	const ovfOption = sourceSelect.locator('option[value="ovf"]');
 	await expect(
 		ovfOption,
-		'The OVF source option must have the user-facing OVF/OVA label'
-	).toHaveText('OVF/OVA');
+		'The ovf source option must be labeled Imported OVA — bare .ovf uploads are not supported'
+	).toHaveText('Imported OVA');
 });
 
 adminTest(
@@ -54,7 +55,7 @@ adminTest(
 		meta(testInfo, {
 			title: 'Skip generalize control follows supported source types',
 			description:
-				'Instructor selects OVF/OVA and asserts the skip-generalize checkbox and safety help are ' +
+				'Instructor selects Imported OVA and asserts the skip-generalize checkbox and safety help are ' +
 				'visible, then selects ISO and asserts the checkbox is unavailable.',
 			severity: 'warning',
 			runbook:
@@ -72,7 +73,7 @@ adminTest(
 		});
 		await expect(
 			checkbox,
-			'OVF/OVA sources must expose the skip-generalize checkbox'
+			'Imported OVA sources must expose the skip-generalize checkbox'
 		).toBeVisible();
 		await expect(
 			checkbox,
@@ -97,9 +98,9 @@ adminTest(
 
 adminTest('template_wizard_ova_catalog_picker', async ({ authedAdminPage: page }, testInfo) => {
 	meta(testInfo, {
-		title: 'OVF/OVA picker uses the catalog, not folder VMs',
+		title: 'Imported OVA picker uses the catalog, not folder VMs',
 		description:
-			'Instructor selects OVF/OVA and sees either the empty-state Images link or a catalog ' +
+			'Instructor selects Imported OVA and sees either the empty-state Images link or a catalog ' +
 			'select with Refresh OVAs. In-flight/error rows are disabled; imported rows carry a moref. ' +
 			'An empty catalog is a closed assertion (empty-state + Images link), not a silent skip.',
 		severity: 'warning',
