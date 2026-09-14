@@ -50,6 +50,16 @@ adminTest('image_library_loads', async ({ authedAdminPage: page }, testInfo) => 
 			'(instructor role regression) or an error boundary rendered instead'
 	).toBeVisible({ timeout: 15_000 });
 
+	const intro = page.locator('header p').first();
+	await expect(
+		intro,
+		'Images intro must name the Imported OVA wizard picker'
+	).toContainText('Imported OVA');
+	await expect(
+		intro,
+		'Images intro must not advertise OVF as a supported upload type'
+	).not.toContainText('OVF/OVA');
+
 	// The drop-zone section (<section aria-label="File drop zone">) contains the
 	// "Browse files" label-button. A <label> element is not a <button> role, so we
 	// locate it by text. Its absence means the upload UI was removed from the page.
