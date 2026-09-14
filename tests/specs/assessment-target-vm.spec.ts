@@ -117,10 +117,10 @@ test('assessment_target_vm_shown', async ({ authedPage: page }, testInfo) => {
 	await expect(page).toHaveURL(new RegExp(`^.*\\/pods\\/${podId}\\/testing/?$`), {
 		timeout: 15_000
 	});
-	await expect(page.getByRole('heading', { name: 'Assessments' })).toBeVisible({
+	await expect(page.getByRole('heading', { name: 'Assessments', exact: true })).toBeVisible({
 		timeout: 15_000
 	});
-	await expect(page.getByRole('heading', { name: 'Available Assessments' })).toBeVisible({
+	await expect(page.getByRole('heading', { name: 'Available Assessments', exact: true })).toBeVisible({
 		timeout: 15_000
 	});
 

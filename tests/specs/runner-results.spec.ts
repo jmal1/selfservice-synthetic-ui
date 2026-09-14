@@ -179,7 +179,7 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 		{ timeout: 15_000 }
 	);
 	await expect(
-		page.getByRole('heading', { name: 'Assessments' }),
+		page.getByRole('heading', { name: 'Assessments', exact: true }),
 		'Assessments heading must be visible on /pods/{podId}/testing'
 	).toBeVisible({ timeout: 15_000 });
 	await expect(
