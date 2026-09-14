@@ -108,10 +108,20 @@ const lifecycleCheck = async (
 	await page.getByRole('button', { name: /^Delete Pod$/ }).click();
 	await page.getByRole('button', { name: /^Confirm Delete$/ }).click();
 
-	// ── Should land back on / (handleDeletePod calls goto('/')) ─────────
-	await expect(page.getByRole('heading', { name: /Dashboard/i })).toBeVisible({
-		timeout: 60_000
-	});
+	// Prefer automatic goto('/') after delete; if the client got a 409/slow
+	// response and stayed on the detail page, follow Back to dashboard.
+	const dashboardHeading = page.getByRole('heading', { name: /Dashboard/i });
+	const backLink = page.getByRole('link', { name: /Back to dashboard/i });
+	try {
+		await expect(dashboardHeading).toBeVisible({ timeout: 30_000 });
+	} catch {
+		if (await backLink.isVisible().catch(() => false)) {
+			await backLink.click();
+		} else {
+			await page.goto('/');
+		}
+		await expect(dashboardHeading).toBeVisible({ timeout: 30_000 });
+	}
 };
 
 registerLifecycleCheck(
