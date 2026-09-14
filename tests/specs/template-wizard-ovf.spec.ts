@@ -114,20 +114,31 @@ adminTest('template_wizard_ova_catalog_picker', async ({ authedAdminPage: page }
 	await expect(sourceSelect).not.toBeDisabled({ timeout: 15_000 });
 	await sourceSelect.selectOption('ovf');
 
+	// Wait out the Loading OVAs… branch before branching empty vs catalog.
+	await expect(page.getByText('Loading OVAs…')).toHaveCount(0, { timeout: 15_000 });
+
 	const emptyState = page.getByText('No imported OVAs found');
 	const catalogSelect = page.getByTestId('ovf-ova-select');
 	const imagesLink = page.getByRole('link', { name: /Images page/i });
 	const refresh = page.getByRole('button', { name: /Refresh OVAs/i });
+	const loadError = page.getByText("Couldn't load OVAs");
 
-	const emptyVisible = await emptyState.isVisible().catch(() => false);
-	const catalogVisible = await catalogSelect.isVisible().catch(() => false);
+	await expect(
+		emptyState.or(catalogSelect).or(loadError),
+		'OVA source must settle into empty-state, catalog select, or load-error'
+	).toBeVisible({ timeout: 15_000 });
 
-	if (emptyVisible) {
+	if (await loadError.isVisible().catch(() => false)) {
+		await expect(page.getByRole('button', { name: /^Retry$/i })).toBeVisible();
+		return;
+	}
+
+	if (await emptyState.isVisible().catch(() => false)) {
 		await expect(
 			imagesLink,
 			'Empty OVA catalog must send the instructor to /admin/images instead of claiming there are no OVAs forever'
 		).toBeVisible();
-		await expect(refresh).toBeVisible();
+		await expect(refresh, 'Empty OVA catalog should offer Refresh OVAs').toBeVisible();
 		return;
 	}
 

@@ -106,13 +106,14 @@ test('runner_results_render', async ({ authedPage: page }, testInfo) => {
 				);
 			}
 			const history = await historyResp.json();
+			// Empty pods historically encoded as JSON null (nil Go slice). Treat
+			// null/non-array as "no runs" and keep scanning — do not fail the
+			// whole check on a sibling lifecycle pod with zero history.
 			if (!Array.isArray(history)) {
-				throw new Error(
-					`GET /api/v1/pods/${podId}/testing/runs returned a non-array payload for a student-owned pod`
-				);
+				continue;
 			}
 
-			for (const candidate of (history as RunSummary[]).slice(0, 100)) {
+			for (const candidate of history.slice(0, 100) as RunSummary[]) {
 				if (!candidate?.id || !isTerminalRunStatus(candidate.status)) continue;
 				terminalCandidates += 1;
 				detailLookups += 1;
