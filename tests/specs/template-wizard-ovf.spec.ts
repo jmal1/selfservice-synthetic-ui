@@ -120,7 +120,9 @@ adminTest('template_wizard_ova_catalog_picker', async ({ authedAdminPage: page }
 	const emptyState = page.getByText('No imported OVAs found');
 	const catalogSelect = page.getByTestId('ovf-ova-select');
 	const imagesLink = page.getByRole('link', { name: /Images page/i });
-	const refresh = page.getByRole('button', { name: /Refresh OVAs/i });
+	// Prefer visible text: buttons sit inside a <label>, so role-name matching can
+	// become the whole field label ("Imported OVA…") instead of "Refresh OVAs".
+	const refresh = page.getByRole('button').filter({ hasText: /^Refresh OVAs$/ });
 	const loadError = page.getByText("Couldn't load OVAs");
 
 	await expect(
@@ -129,7 +131,7 @@ adminTest('template_wizard_ova_catalog_picker', async ({ authedAdminPage: page }
 	).toBeVisible({ timeout: 15_000 });
 
 	if (await loadError.isVisible().catch(() => false)) {
-		await expect(page.getByRole('button', { name: /^Retry$/i })).toBeVisible();
+		await expect(page.getByRole('button').filter({ hasText: /^Retry$/ })).toBeVisible();
 		return;
 	}
 
