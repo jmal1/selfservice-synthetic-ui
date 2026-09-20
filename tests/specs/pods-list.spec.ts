@@ -47,11 +47,11 @@ test('dashboard_renders_for_synthetic_user', async ({ authedPage: page }, testIn
 	// enough to catch a genuine hydration break.
 	const heading = page
 		.locator('h1, h2')
-		.filter({ hasText: /dashboard|labs|environments|pods/i })
+		.filter({ hasText: /labs|environments|pods/i })
 		.first();
 	await expect(
 		heading,
-		'expected a Dashboard / Labs / Environments / Pods heading on the home page'
+		'expected a Labs / Environments / Pods heading on the home page'
 	).toBeVisible({ timeout: 20_000 });
 
 	// Allow benign console noise (warnings, deprecations) but flag
