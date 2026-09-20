@@ -50,10 +50,10 @@ const ADMIN_CHECKS: AdminCheck[] = [
 		apiPath: '/api/v1/admin/audit'
 	},
 	{
-		path: '/admin/users',
-		description: 'User management admin page',
-		apiPatterns: [/\/api\/v1\/admin\/users(\?|$)/],
-		apiPath: '/api/v1/admin/users'
+		path: '/admin',
+		description: 'Admin overview cluster usage',
+		apiPatterns: [/\/api\/v1\/admin\/cluster-usage(\?|$)/],
+		apiPath: '/api/v1/admin/cluster-usage'
 	},
 	{
 		// The image-upload endpoints hand out presigned MinIO URLs. If a

@@ -88,12 +88,12 @@ const lifecycleCheck = async (
 	const newPodRow = page
 		.locator('li, tr, div')
 		.filter({ hasText: envName })
-		.filter({ has: page.getByRole('link', { name: /View pod details/i }) })
+		.filter({ has: page.getByRole('link', { name: new RegExp(`^Open ${envName}$`) }) })
 		.first();
 	await expect(newPodRow, `new pod row "${envName}" not visible on dashboard`).toBeVisible({
 		timeout: 60_000
 	});
-	await newPodRow.getByRole('link', { name: /View pod details/i }).first().click();
+	await newPodRow.getByRole('link', { name: new RegExp(`^Open ${envName}$`) }).first().click();
 	await page.waitForURL(/\/pods\/[a-f0-9-]+/, { timeout: 15_000 });
 
 	// ── Wait for status badge to leave provisioning ────────────────────
@@ -110,8 +110,8 @@ const lifecycleCheck = async (
 
 	// Prefer automatic goto('/') after delete; if the client got a 409/slow
 	// response and stayed on the detail page, follow Back to dashboard.
-	const dashboardHeading = page.getByRole('heading', { name: /Dashboard/i });
-	const backLink = page.getByRole('link', { name: /Back to dashboard/i });
+	const dashboardHeading = page.getByRole('heading', { name: /My Labs/i });
+	const backLink = page.getByRole('link', { name: /Back to My Labs/i });
 	try {
 		await expect(dashboardHeading).toBeVisible({ timeout: 30_000 });
 	} catch {
