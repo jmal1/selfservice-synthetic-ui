@@ -31,7 +31,7 @@ const lifecycleCheck = async (
 ) => {
 	meta(testInfo, {
 		title: 'Create + destroy a synthetic-noop pod (full lifecycle)',
-		description: `Walks the multi-step /pods/new wizard with template "${TEMPLATE ?? '?'}", waits for active status, then destroys via the pod detail page. Deepest end-to-end UI check: exercises wizard state machine, provisioning worker, vCenter clone, NetBird onboarding, and destroy path. A failure usually means the wizard broke (selectors changed) or the worker is stalled — cross-check pod_lifecycle API synthetic and worker logs.`,
+		description: `Walks the multi-step /pods/new wizard with template "${TEMPLATE ?? '?'}", waits for active status, then destroys via the pod detail page. Deepest end-to-end UI check: exercises wizard state machine, provisioning worker, vCenter clone, NetBird onboarding, and destroy path. A visible "pods quota exceeded" banner fails this check immediately. Any other failure usually means the wizard broke (selectors changed) or the worker is stalled — cross-check pod_lifecycle API synthetic and worker logs.`,
 		severity: 'critical',
 		runbook:
 			'https://github.com/jmal1/Homelab/blob/main/future/Synthetic-Monitoring.md#when-create_and_destroy_pod-fails'
@@ -85,13 +85,28 @@ const lifecycleCheck = async (
 	// After successful create the app does goto('/') (SvelteKit soft nav,
 	// no load event). Don't waitForURL; just wait for the new pod's row
 	// to appear in the dashboard list and click into it.
+	// A quota rejection is already on the page. Fail with that text instead
+	// of sitting out the dashboard timeout.
 	const newPodRow = page
 		.locator('li, tr, div')
 		.filter({ hasText: envName })
 		.filter({ has: page.getByRole('link', { name: new RegExp(`^Open ${envName}$`) }) })
 		.first();
+	const quotaBanner = page.getByText(/pods quota exceeded/i).first();
+	const rowWait = newPodRow
+		.waitFor({ state: 'visible', timeout: 60_000 })
+		.then(() => 'row' as const)
+		.catch(() => 'timeout' as const);
+	const quotaWait = quotaBanner
+		.waitFor({ state: 'visible', timeout: 60_000 })
+		.then(() => 'quota' as const)
+		.catch(() => 'timeout' as const);
+	const outcome = await Promise.race([rowWait, quotaWait]);
+	if (outcome === 'quota') {
+		throw new Error((await quotaBanner.innerText()).trim());
+	}
 	await expect(newPodRow, `new pod row "${envName}" not visible on dashboard`).toBeVisible({
-		timeout: 60_000
+		timeout: outcome === 'row' ? 1_000 : 0
 	});
 	await newPodRow.getByRole('link', { name: new RegExp(`^Open ${envName}$`) }).first().click();
 	await page.waitForURL(/\/pods\/[a-f0-9-]+/, { timeout: 15_000 });
