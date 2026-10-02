@@ -27,6 +27,7 @@ test('single_vm_and_lab_entries', async ({ authedPage: page }, testInfo) => {
 	await page.getByRole('link', { name: 'Single VM', exact: true }).first().click();
 	await expect(page).toHaveURL(/\/single-vm\/?$/, { timeout: 15_000 });
 	await expect(page.getByRole('heading', { name: 'Single VM', exact: true })).toBeVisible();
+	await expect(page.getByText('shared network')).toHaveCount(0);
 
 	await page.goto('/pods');
 	const lab = page.getByRole('link', { name: 'New lab', exact: true }).first();
