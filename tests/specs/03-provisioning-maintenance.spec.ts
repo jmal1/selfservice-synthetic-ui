@@ -97,14 +97,12 @@ test('provisioning_maintenance_contract', async ({ authedPage: page }, testInfo)
 			'maintenance alert must not mount when provisioning is open'
 		).toHaveCount(0);
 		await expect(
-			page.getByRole('link', { name: 'Deploy VM', exact: true }).first(),
-			'dashboard must expose an actionable Deploy VM entry when provisioning is open'
+			page.getByRole('link', { name: 'New environment', exact: true }).first(),
+			'dashboard must expose New environment when provisioning is open'
 		).toBeVisible({ timeout: 15_000 });
 	}
 
-	const dashboardProvisioningControls = page
-		.getByRole('link', { name: /deploy vm|create pod|new environment/i })
-		.or(page.getByRole('button', { name: /deploy vm|create pod|new environment/i }));
+	const dashboardProvisioningControls = page.getByRole('link', { name: 'New lab', exact: true });
 	if (expectMaintenance) {
 		await expectControlsUnavailableOrDisabled(
 			dashboardProvisioningControls,
