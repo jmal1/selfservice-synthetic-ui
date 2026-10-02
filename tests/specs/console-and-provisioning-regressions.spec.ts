@@ -279,7 +279,7 @@ test('known_enabled_provisioning_refresh_never_mounts_loading_banner', async (
 	await page.goto('/');
 	await initialStatus;
 	await expect(
-		page.getByRole('link', { name: 'Deploy VM', exact: true }).first()
+		page.getByRole('link', { name: 'New environment', exact: true }).first()
 	).toBeVisible();
 	await expect(page.getByText(CHECKING_PROVISIONING, { exact: true })).toHaveCount(0);
 

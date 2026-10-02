@@ -15,6 +15,7 @@ This repository is **public**. Defaults in `.env.example` and Playwright use `*.
 |-------------------------------|----------------------------------------------------------------------|
 | `auth.spec.ts`                | Full OIDC login through Authentik → land on dashboard                |
 | `pods-list.spec.ts`           | Authenticated home page loads, no 500s, lists pods (if any)          |
+| `single-vm-entry.spec.ts`     | Sidebar opens Single VM; My Labs still starts an isolated lab        |
 | `create-and-destroy-pod.spec.ts` | UI creates a synthetic pod, waits for "ready", destroys it.        |
 | `03-provisioning-maintenance.spec.ts` | Reads provisioning status and verifies maintenance UI controls without mutations. |
 | `workflow-list.spec.ts`       | `/admin/workflows` 403 for non-admins (synthetic is a student role)  |
@@ -682,9 +683,9 @@ current expected check counts are:
 
 | lifecycle | expected maintenance | expected checks |
 |-----------|----------------------|-----------------|
-| `true`    | `false`              | 29              |
-| `false`   | `false`              | 29              |
-| `false`   | `true`               | 29              |
+| `true`    | `false`              | 30              |
+| `false`   | `false`              | 30              |
+| `false`   | `true`               | 30              |
 
 The `true`/`true` combination is rejected. If the optional instructor identity
 is absent, its six statically skipped checks are excluded from the dynamic
