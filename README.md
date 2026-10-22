@@ -683,12 +683,12 @@ current expected check counts are:
 
 | lifecycle | expected maintenance | expected checks |
 |-----------|----------------------|-----------------|
-| `true`    | `false`              | 30              |
-| `false`   | `false`              | 30              |
-| `false`   | `true`               | 30              |
+| `true`    | `false`              | 37              |
+| `false`   | `false`              | 37              |
+| `false`   | `true`               | 37              |
 
 The `true`/`true` combination is rejected. If the optional instructor identity
-is absent, its six statically skipped checks are excluded from the dynamic
+is absent, its eleven statically skipped checks are excluded from the dynamic
 expected count while `admin_identity_configured` remains and fails visibly.
 
 The provisioning contract check never creates a fixture. In maintenance mode, if an existing cleanup-eligible pod is available, it verifies that Add VM is gated while Delete Pod remains enabled. If none exists, the result is annotated with that limitation; the status API, banner, dashboard, and shared provisioning route are still checked without weakening their assertions. In open mode, the same wizard paths must reach enabled final actions without invoking mutations.

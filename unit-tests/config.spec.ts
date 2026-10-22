@@ -85,7 +85,7 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 			SYNTHETIC_ADMIN_USERNAME: 'admin',
 			SYNTHETIC_ADMIN_PASSWORD: 'secret'
 		})
-	).toBe(30);
+	).toBe(37);
 	expect(
 		expectedFullSuiteCheckCount({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
@@ -93,7 +93,7 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 			SYNTHETIC_ADMIN_USERNAME: 'admin',
 			SYNTHETIC_ADMIN_PASSWORD: 'secret'
 		})
-	).toBe(30);
+	).toBe(37);
 	expect(
 		expectedFullSuiteCheckCount({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
@@ -102,13 +102,13 @@ test('full-suite expected count follows lifecycle, maintenance, and identity sta
 			SYNTHETIC_ADMIN_USERNAME: 'admin',
 			SYNTHETIC_ADMIN_PASSWORD: 'secret'
 		})
-	).toBe(30);
+	).toBe(37);
 	expect(
 		expectedFullSuiteCheckCount({
 			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
 			SYNTHETIC_EXPECT_MAINTENANCE: 'false'
 		})
-	).toBe(24);
+	).toBe(26);
 });
 
 test('README configured check-count table matches computed production configurations', () => {
@@ -417,3 +417,34 @@ function asRecord(value: unknown): Record<string, unknown> {
 	}
 	return value as Record<string, unknown>;
 }
+
+// The reporter forces overall failure when discovery and the formula disagree;
+// that drifted for 30+ days unnoticed (overall_success=0 with every check green).
+test('expected count matches the checks Playwright actually discovers', () => {
+	for (const admin of [undefined, 'admin']) {
+		const env = {
+			...process.env,
+			PUSHGATEWAY_URL: 'skip',
+			SYNTHETIC_LIFECYCLE_ENABLED: 'false',
+			SYNTHETIC_EXPECT_MAINTENANCE: 'false',
+			SYNTHETIC_ADMIN_USERNAME: admin ?? '',
+			SYNTHETIC_ADMIN_PASSWORD: admin ? 'secret' : ''
+		};
+		const out = execFileSync('npx playwright test --list --reporter=json', {
+			env,
+			shell: true,
+			encoding: 'utf8',
+			maxBuffer: 32 * 1024 * 1024
+		});
+		type Suite = { suites?: Suite[]; specs?: { tests: { expectedStatus: string }[] }[] };
+		let discovered = 0;
+		const walk = (s: Suite): void => {
+			s.suites?.forEach(walk);
+			for (const spec of s.specs ?? []) {
+				discovered += spec.tests.filter((t) => t.expectedStatus !== 'skipped').length;
+			}
+		};
+		(JSON.parse(out.slice(out.indexOf('{'))) as { suites: Suite[] }).suites.forEach(walk);
+		expect(discovered, `discovered checks with admin=${admin ?? 'unset'}`).toBe(expectedFullSuiteCheckCount(env));
+	}
+});
