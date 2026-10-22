@@ -50,11 +50,11 @@ export function expectedFullSuiteCheckCount(
 	env: NodeJS.ProcessEnv = process.env,
 	config = loadSyntheticConfig(env)
 ): number {
-	// Twenty-five checks are unconditional. The ten instructor-session checks,
+	// Twenty-six checks are unconditional. The eleven instructor-session checks,
 	// the admin login, lifecycle check, and maintenance check are conditional.
 	// Adding or removing a spec test must update these numbers.
-	let count = 25;
-	if (env.SYNTHETIC_ADMIN_USERNAME) count += 10;
+	let count = 26;
+	if (env.SYNTHETIC_ADMIN_USERNAME) count += 11;
 	if (env.SYNTHETIC_ADMIN_USERNAME && env.SYNTHETIC_ADMIN_PASSWORD) count += 1;
 	if (config.lifecycleEnabled) count += 1;
 	if (config.expectMaintenance || !config.lifecycleEnabled) count += 1;
